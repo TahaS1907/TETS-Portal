@@ -43,9 +43,11 @@ DEFAULTS: dict = {
         "motor_url": "",               # bos: wss://<base_url>/app/
         "max_satir": 200000,          # kullanicinin giris/sayfa secimi icin beklenen sure
         "export": {
-            "sag_tik_menu": ["Download", "İndir", "Indir", "Export", "Dışa aktar"],
-            "veri_secenegi": ["Data", "Veri", "Export data", "Verileri dışa aktar"],
-            "onay_butonu": ["Download", "İndir", "Export", "Dışa aktar"],
+            # Kullanicinin tarif ettigi akis: sag tik > "Download as..." (Excel) > acilan pencerede "Apply"
+            "sag_tik_menu": ["Download as Excel", "Download as", "Download", "Excel olarak indir",
+                             "Farklı indir", "İndir", "Indir", "Export", "Dışa aktar"],
+            "veri_secenegi": ["Excel", "Data", "Veri", "Export data", "Verileri dışa aktar"],
+            "onay_butonu": ["Apply", "Uygula", "Download", "İndir", "Export", "Dışa aktar", "OK", "Tamam"],
             "link_selector": "a.export-url, a[href*='TempContent'], a[download]",
         },
         "fa_hareket": {

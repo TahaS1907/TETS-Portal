@@ -228,7 +228,8 @@ class QlikSession:
         end = time.time() + timeout / 1000
         while time.time() < end:
             for t in labels:
-                rx = re.compile(rf"^\s*{re.escape(t)}\s*(\.\.\.|…|>|›)?\s*$", re.I)
+                # "Download as..." gibi devami olan menu yazilarini da yakalar
+                rx = re.compile(rf"^\s*{re.escape(t)}(?![A-Za-zÇĞİÖŞÜçğıöşü]).*$", re.I)
                 for loc in (page.get_by_role("menuitem", name=rx),
                             page.get_by_role("button", name=rx),
                             page.get_by_text(rx)):
@@ -243,8 +244,8 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
-    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "ekran": "filtre + ekrandan okuma",
-               "motor": "motor (WebSocket) baglantisi", "menu": "sag tik > indir menusu"}
+    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "menu": "sag tik > Download as > Apply",
+               "ekran": "filtre + ekrandan okuma", "motor": "motor (WebSocket) baglantisi"}
 
     def export(self, app: dict, selections: dict, must_have: list[str] | None = None) -> pd.DataFrame:
         """Filtreleri uygulayip tablo verisini alir.
@@ -360,15 +361,32 @@ class QlikSession:
         page.wait_for_timeout(1500)  # secimlerin uygulanmasi icin
         if page.get_by_text(re.compile(r"(No data|Veri yok|Gösterilecek veri yok)", re.I)).count():
             return pd.DataFrame()
-        self._open_download_menu(target, ex)
-        self._click_text(ex["veri_secenegi"], timeout=3000)
-        with page.expect_download(timeout=self.timeout) as dl:
-            self._click_text(ex["onay_butonu"], timeout=3000)
-            link = page.locator(ex["link_selector"]).first
-            link.wait_for(state="visible", timeout=self.timeout)
-            link.click()
-        path = self.download_dir / (dl.value.suggested_filename or "export.xlsx")
-        dl.value.save_as(path)
+        downloads = []
+        def handler(d):
+            downloads.append(d)
+        page.on("download", handler)
+        try:
+            self._open_download_menu(target, ex)                      # sag tik > Download as...
+            if not downloads:
+                self._click_text(ex["veri_secenegi"], timeout=2500)   # (varsa) Excel / Data
+            if not downloads:
+                self._click_text(ex["onay_butonu"], timeout=8000)     # acilan pencerede Apply
+            # Apply'dan sonra dosya ya dogrudan iner ya da "indirmek icin tiklayin" linki cikar
+            end = time.time() + self.timeout / 1000
+            clicked = False
+            while not downloads and time.time() < end:
+                link = page.locator(ex["link_selector"]).first
+                if not clicked and link.count() and link.is_visible():
+                    link.click()
+                    clicked = True
+                page.wait_for_timeout(300)
+            if not downloads:
+                raise QlikError("Apply'dan sonra dosya inmedi")
+        finally:
+            page.remove_listener("download", handler)
+        dl = downloads[0]
+        path = self.download_dir / (dl.suggested_filename or "export.xlsx")
+        dl.save_as(path)
         page.keyboard.press("Escape")
         raw = pd.read_excel(path, dtype=object) if path.suffix.lower() != ".csv" else pd.read_csv(path, dtype=str)
         return _fix_header(raw)
