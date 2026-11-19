@@ -38,7 +38,8 @@ DEFAULTS: dict = {
         "gorunmez": False,
         "zaman_asimi_sn": 90,
         "bekleme_sn": 600,
-        "export_yontemi": "otomatik",  # otomatik: once motor (Engine API), olmazsa menu | motor | menu
+        "export_yontemi": "otomatik",  # otomatik (sirayla dener) | sayfa | ekran | motor | menu
+        "ekran_max_satir": 5000,
         "motor_url": "",               # bos: wss://<base_url>/app/
         "max_satir": 200000,          # kullanicinin giris/sayfa secimi icin beklenen sure
         "export": {
@@ -51,7 +52,8 @@ DEFAULTS: dict = {
             "ad": "ROT FA PN History",
             "app_id": "609d5232-db11-4195-90d1-483cffa420e1", "sheet_id": "", "object_id": "",
             "alanlar": {"pn": "PN", "sn": "SN", "grb": "GOODS_RCVD_BATCH", "aircraft": "AC",
-                        "nha_pn": "NHA_PN", "nha_sn": "NHA_SN"},
+                        "nha_pn": "NHA_PN", "nha_sn": "NHA_SN",
+                        "pn_group": "PN_GROUP"},
         },
         "fa_listesi": {"ad": "FA listesi", "app_id": "", "sheet_id": "", "object_id": "", "alanlar": {"fa_no": "FA No"}},
         "envanter": {

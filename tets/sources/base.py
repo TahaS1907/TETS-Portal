@@ -16,12 +16,19 @@ class DataSource(ABC):
         """Parcanin (PN+SN ve/veya GRB) tum hareketleri, tarih sirali."""
 
     @abstractmethod
-    def aircraft_events(self, aircraft: str, start: datetime, end: datetime) -> pd.DataFrame:
-        """Ucaktaki tum takma/sokme hareketleri (tarih araliginda)."""
+    def aircraft_events(self, aircraft: str, start: datetime, end: datetime, **hint) -> pd.DataFrame:
+        """Ucaktaki takma/sokme hareketleri (tarih araliginda).
+
+        hint (pn=... veya pn_group=...): canli kaynakta filtreyi daraltmak icin; sonuc kumesi
+        bundan bagimsiz olarak motor tarafinda zaten puanlanir."""
 
     @abstractmethod
     def nha_events(self, nha_pn: str, nha_sn: str, start: datetime, end: datetime) -> pd.DataFrame:
         """Ust assy (NHA) uzerindeki takma/sokme hareketleri."""
+
+    def query_levels(self, inst: dict) -> list[dict]:
+        """Ucak sorgusu icin daraltma seviyeleri. Yerel veride tek seviye yeter."""
+        return [{}]
 
     def fa_lookup(self, fa_no: str) -> dict | None:
         """FA numarasindan PN/SN/GRB bulur (FA listesi varsa)."""
@@ -51,7 +58,7 @@ class FrameSource(DataSource):
             mask |= df.grb_k == gk
         return df[mask].sort_values(["date", "seq"])
 
-    def aircraft_events(self, aircraft, start, end):
+    def aircraft_events(self, aircraft, start, end, **hint):
         df = self.df
         m = (df.aircraft_k == key(aircraft)) & (df.date >= start) & (df.date <= end)
         return df[m].sort_values(["date", "seq"])

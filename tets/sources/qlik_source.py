@@ -35,6 +35,8 @@ TABLE_SEL = ".qv-object-table, .qv-object-sn-table, .qv-object-pivot-table, .qv-
 
 MORE_SEL = ("button[aria-label*='More' i], button[title*='More' i], button[aria-label*='Daha' i], "
             "button[title*='Daha' i], [data-testid*='more' i], [tid='nav-menu-more'], button[aria-haspopup='menu']")
+SCREEN_JS = "\n".join(line for line in (Path(__file__).with_name("qlik_screen.js")).read_text(encoding="utf-8")
+                      .splitlines() if not line.startswith("//")).strip()
 ENGINE_JS = "\n".join(line for line in (Path(__file__).with_name("qlik_engine.js")).read_text(encoding="utf-8")
                       .splitlines() if not line.startswith("//")).strip()
 
@@ -61,6 +63,7 @@ class QlikSession:
         self.download_dir = Path(tempfile.mkdtemp(prefix="tets_qlik_"))
         self._pw = self.browser = self.context = self.page = None
         self.ws_urls: list[str] = []  # Qlik sayfasinin kendi actigi motor baglantilari
+        self.good_method = ""         # bu oturumda ise yarayan okuma yontemi
 
     # ------------------------------------------------------------------ yasam dongusu
     def __enter__(self):
@@ -240,18 +243,59 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
+    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "ekran": "filtre + ekrandan okuma",
+               "motor": "motor (WebSocket) baglantisi", "menu": "sag tik > indir menusu"}
+
     def export(self, app: dict, selections: dict, must_have: list[str] | None = None) -> pd.DataFrame:
-        """Tablo verisini alir. Once Qlik motorundan (Engine API) dogrudan, olmazsa menuden indirerek."""
+        """Filtreleri uygulayip tablo verisini alir.
+
+        Yontemler sirayla denenir; ise yarayan yontem oturum boyunca hatirlanir ve hep o kullanilir.
+        """
         self.resolve_sheet(app)
-        method = self.cfg.get("export_yontemi", "otomatik")
-        if method in ("otomatik", "motor"):
+        chosen = self.cfg.get("export_yontemi", "otomatik")
+        order = list(self.METHODS) if chosen == "otomatik" else [chosen]
+        if self.good_method in order:
+            order.remove(self.good_method)
+            order.insert(0, self.good_method)
+        errors = []
+        for m in order:
             try:
-                return self.export_engine(app, selections, must_have or [])
+                if m == "sayfa":
+                    df = self.export_engine(app, selections, must_have or [], "client")
+                elif m == "motor":
+                    df = self.export_engine(app, selections, must_have or [], "ws")
+                elif m == "ekran":
+                    df = self.export_screen(app, selections)
+                else:
+                    df = self.export_menu(app, selections)
             except Exception as e:
-                if method == "motor":
-                    raise
-                self.log(f"Motor ile okunamadi ({e}); menu ile indirme deneniyor")
-        return self.export_menu(app, selections)
+                msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
+                errors.append(f"{self.METHODS[m]}: {msg}")
+                self.log(f"  {self.METHODS[m]} olmadi -> {msg}")
+                continue
+            if self.good_method != m:
+                self.log(f"» Veri '{self.METHODS[m]}' yontemiyle okunuyor.")
+                self.good_method = m
+            return df
+        raise QlikError("Qlik tablosu okunamadi. Denenenler: " + " | ".join(errors))
+
+    def export_screen(self, app: dict, selections: dict) -> pd.DataFrame:
+        """Filtreleri Qlik'te uygular (secim cubugunda gorunur) ve tabloyu ekrandan okur."""
+        page = self.page
+        sel = {f: v for f, v in selections.items() if f and str(v).strip()}
+        self.log(f"Qlik filtresi: {sel}")
+        page.goto(self.sheet_url(app, sel), wait_until="domcontentloaded")
+        oid = app.get("object_id", "")
+        target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
+        target.wait_for(state="visible", timeout=self.timeout)
+        page.wait_for_timeout(2000)  # filtrelerin uygulanip tablonun yenilenmesi
+        if page.get_by_text(re.compile(r"(No data|Veri yok|Gösterilecek veri yok)", re.I)).count():
+            return pd.DataFrame()
+        res = page.evaluate(SCREEN_JS, {"oid": oid, "tableSel": TABLE_SEL,
+                                        "maxRows": int(self.cfg.get("ekran_max_satir", 5000))})
+        if res.get("truncated"):
+            self.log("  UYARI: ekrandan okunan satir limiti doldu")
+        return pd.DataFrame(res["rows"], columns=_unique(res["headers"]), dtype=object)
 
     def engine_urls(self, app_id: str) -> list[str]:
         """Denenecek motor adresleri: once Qlik sayfasinin kendi kullandigi adres."""
@@ -273,7 +317,7 @@ class QlikSession:
         except Exception:
             pass
 
-    def export_engine(self, app: dict, selections: dict, must_have: list[str]) -> pd.DataFrame:
+    def export_engine(self, app: dict, selections: dict, must_have: list[str], mode: str) -> pd.DataFrame:
         sel = {}
         for f, v in selections.items():
             vals = [str(x) for x in (v if isinstance(v, (list, tuple)) else [v]) if str(x).strip()]
@@ -284,7 +328,7 @@ class QlikSession:
         args = {"appId": app["app_id"], "objectId": app.get("object_id", ""), "sheetId": app.get("sheet_id", ""),
                 "selections": sel, "mustHave": must_have,
                 "maxRows": int(self.cfg.get("max_satir", 200000)), "timeoutMs": self.timeout}
-        attempts = [("client", "")] + [("ws", u) for u in self.engine_urls(app["app_id"])]
+        attempts = [("client", "")] if mode == "client" else [("ws", u) for u in self.engine_urls(app["app_id"])]
         errors = []
         for mode, url in attempts:
             try:
@@ -388,8 +432,16 @@ class QlikSource(DataSource):
             subset=["date", "tx_raw", "pn_k", "sn_k", "aircraft_k", "position", "wo_k"])
         return df.sort_values(["date", "seq"]).reset_index(drop=True)
 
-    def aircraft_events(self, aircraft, start, end):
-        return self._frame({"aircraft": aircraft}).aircraft_events(aircraft, start, end)
+    def query_levels(self, inst):
+        levels = [{"pn": inst.get("pn", "")}]
+        if inst.get("pn_group"):
+            levels.append({"pn_group": inst["pn_group"]})
+        levels.append({})
+        return levels
+
+    def aircraft_events(self, aircraft, start, end, **hint):
+        sel = {"aircraft": aircraft, **{k: v for k, v in hint.items() if v}}
+        return self._frame(sel).aircraft_events(aircraft, start, end)
 
     def nha_events(self, nha_pn, nha_sn, start, end):
         return self._frame({"nha_pn": nha_pn, "nha_sn": nha_sn}).nha_events(nha_pn, nha_sn, start, end)

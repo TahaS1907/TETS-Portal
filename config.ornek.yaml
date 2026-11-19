@@ -50,6 +50,7 @@ qlik:
       aircraft: "AC"
       nha_pn: "NHA_PN"
       nha_sn: "NHA_SN"
+      pn_group: "PN_GROUP"
 
   # (Opsiyonel) FA listesi: sadece FA No girilince PN/SN bulmak icin
   fa_listesi:

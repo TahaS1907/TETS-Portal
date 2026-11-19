@@ -280,8 +280,18 @@ class FAEngine:
         else:
             if not inst["aircraft_k"]:
                 return None, [], flags, "Takma hareketinde ucak bilgisi yok"
-            evs = self.src.aircraft_events(inst["aircraft"], d - win, d + win)
             rem_t, ins_t = AC_REMOVE, AC_INSTALL
+            # Insan gibi: once "ucak + ayni PN", bulamazsa "ucak + PN grubu", en son sadece ucak filtrelenir.
+            res = None
+            for hint in self.src.query_levels(inst):
+                evs = self.src.aircraft_events(inst["aircraft"], d - win, d + win, **hint)
+                res = self._match(inst, used, evs, rem_t, ins_t, engine, win_days, set(flags))
+                if res[0] is not None:
+                    return res
+            return res
+        return self._match(inst, used, evs, rem_t, ins_t, engine, win_days, flags)
+
+    def _match(self, inst, used, evs, rem_t, ins_t, engine, win_days, flags):
         evs = [ev(r) for _, r in evs.iterrows()] if evs is not None and len(evs) else []
         same_part = lambda e: e["pn_k"] == inst["pn_k"] and e["sn_k"] == inst["sn_k"]
         rems = [e for e in evs if e["tx_type"] == rem_t and uid(e) not in used and not same_part(e)]
