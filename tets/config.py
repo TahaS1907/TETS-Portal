@@ -18,7 +18,8 @@ DEFAULTS: dict = {
         "motor_max_adim": 40,        # motorlarda uzun donguler (Senaryo 3)
         "min_skor": 45,              # bu skorun altindaki aday eslesme sayilmaz (0-100)
         "belirsizlik_farki": 6,      # ilk iki aday arasi fark bundan azsa uyar
-        "aciklama_esik": 0.55,       # PN/grup tutmazsa aciklama benzerligi en az bu olmali
+        "aciklama_esik": 0.55,
+        "tekli_excel_rapor": False,  # tekli FA sorgusunda Excel rapor yazilsin mi (toplu sorguda hep yazilir)       # PN/grup tutmazsa aciklama benzerligi en az bu olmali
         "motor_pn_onekleri": ["CFM", "LEAP", "V25", "PW", "GE90", "GENX", "TRENT", "CF6", "CF34", "PW1"],
         "motor_aciklama_regex": r"^(ENGINE|ENG|MOTOR|POWER ?PLANT)\b(?!.*\b(VALVE|SENSOR|PUMP|MOUNT|COWL|BRACKET|HOSE|DUCT|FILTER|SWITCH|HARNESS|SEAL|STARTER|GENERATOR|CONTROL|PROBE)\b)",
     },

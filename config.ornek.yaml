@@ -13,6 +13,7 @@ fa:
   min_skor: 45            # 0-100; bunun altindaki eslesmeler kabul edilmez
   belirsizlik_farki: 6    # ilk iki aday bu kadar yakinsa "belirsiz" uyarisi
   aciklama_esik: 0.55     # PN / PN grubu tutmuyorsa aciklama benzerligi en az bu olmali
+  tekli_excel_rapor: false  # true: tekli FA sorgusunda da Excel rapor yazilir
 
 # ---------------------------------------------------------------- Kolon eslestirme
 # Export basliklari otomatik taninir (PN, P/N, Part Number, Parca No, Tarih ...).

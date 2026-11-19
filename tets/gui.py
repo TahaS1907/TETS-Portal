@@ -284,7 +284,9 @@ class App(tk.Tk):
             src = self._ensure_source(w, snap)
             fa_date = pd.to_datetime(vals["tarih"], dayfirst=True, errors="coerce") if vals["tarih"] else None
             res = FAEngine(src, self.cfg, self._log).trace(vals["pn"], vals["sn"], vals["grb"], vals["fa"], fa_date)
-            path = write_report([res], self.cfg["cikti_klasoru"])
+            # Tekli sorguda Excel rapor yazilmaz; sonuc sadece ekrandaki aciklamada gorunur.
+            # (Istenirse config.yaml > fa > tekli_excel_rapor: true ile geri acilir.)
+            path = write_report([res], self.cfg["cikti_klasoru"]) if self.cfg["fa"].get("tekli_excel_rapor") else None
             self.ui_q.put(("result", (res, path)))
         self.worker.submit(job)
 
@@ -383,9 +385,13 @@ class App(tk.Tk):
                 elif kind == "status":
                     self.status.set(data)
                 elif kind == "result":
-                    res, self.last_report = data
+                    res, path = data
                     self._show_result(res)
-                    self.status.set(f"{res.status_text}  |  rapor: {Path(self.last_report).name}")
+                    if path:
+                        self.last_report = path
+                        self.status.set(f"{res.status_text}  |  rapor: {Path(path).name}")
+                    else:
+                        self.status.set(res.status_text)
                 elif kind == "batch":
                     results, self.last_report = data
                     self.out.delete("1.0", "end")
