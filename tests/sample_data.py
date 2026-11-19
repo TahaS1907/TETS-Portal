@@ -9,13 +9,17 @@ from pathlib import Path
 
 import pandas as pd
 
-COLS = ["Tarih", "Hareket", "Part Number", "Serial No", "GRB", "Description", "PN Group", "A/C",
-        "Position", "NHA PN", "NHA SN", "Work Order", "Location", "New PN", "New SN"]
+# ROT FA PN History tablosundaki gercek kolon adlari (+ ornek icin New PN / New SN)
+COLS = ["CREATED_DATE", "TRANSACTION_TYPE", "PN", "SN", "GOODS_RCVD_BATCH", "PN_DESCRIPTION", "PN_GROUP",
+        "AC", "AC_POSITION", "NHA_PN", "NHA_SN", "WO", "LOCATION", "New PN", "New SN", "NLA_POSITION"]
 
 
 def R(date, tx, pn, sn, grb="", desc="", grp="", ac="", pos="", nha_pn="", nha_sn="", wo="", loc="",
       new_pn="", new_sn=""):
-    return [date, tx, pn, sn, grb, desc, grp, ac, pos, nha_pn, nha_sn, wo, loc, new_pn, new_sn]
+    nla = ""
+    if nha_pn:  # NHA hareketlerinde pozisyon ust assy icindeki pozisyondur
+        nla, pos = pos, ""
+    return [date, tx, pn, sn, grb, desc, grp, ac, pos, nha_pn, nha_sn, wo, loc, new_pn, new_sn, nla]
 
 
 def rows():
@@ -48,8 +52,8 @@ def rows():
         R("05.08.2025", "AC INSTALL", "LAMP-100", "L1", "", "READING LIGHT", "", "TC-JAA", "SEAT ROW 12 LH", wo="W7"),
         R("05.08.2025", "AC INSTALL", "LAMP-100", "L2", "", "READING LIGHT", "", "TC-JAA", "SEAT ROW 14 RH", wo="W7"),
         # ---------------- S5: NHA (ust assy) hareketleri
-        R("01.09.2025", "NHA REMOVE", "BRG-55", "N7", "", "BEARING", "BRG", nha_pn="WHL-1", nha_sn="W1", wo="W8"),
-        R("01.09.2025", "NHA INSTALL", "BRG-55", "N1", "", "BEARING", "BRG", nha_pn="WHL-1", nha_sn="W1", wo="W8"),
+        R("01.09.2025", "NHA REMOVE", "BRG-55", "N7", "", "BEARING", "BRG", pos="INBD", nha_pn="WHL-1", nha_sn="W1", wo="W8"),
+        R("01.09.2025", "NHA INSTALL", "BRG-55", "N1", "", "BEARING", "BRG", pos="INBOARD", nha_pn="WHL-1", nha_sn="W1", wo="W8"),
         R("05.09.2025", "NHA REMOVE", "BRG-55", "N8", "", "BEARING", "BRG", nha_pn="WHL-1", nha_sn="W2", wo="W9"),
         R("05.09.2025", "NHA INSTALL", "BRG-55", "N2", "", "BEARING", "BRG", nha_pn="WHL-1", nha_sn="W2", wo="W9"),
         R("10.09.2025", "STORE RECEIPT", "BRG-55", "N8", "", "BEARING", "BRG", loc="IST"),

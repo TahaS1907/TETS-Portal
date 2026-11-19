@@ -157,6 +157,9 @@ class QlikSession:
     def export(self, app: dict, selections: dict) -> pd.DataFrame:
         if not app.get("app_id"):
             raise QlikError("config.yaml icinde app_id tanimli degil.")
+        if not app.get("sheet_id"):
+            raise QlikError("config.yaml icinde sheet_id tanimli degil. Tablonun bulundugu sayfayi Qlik'te "
+                            "acip adres cubugundaki /sheet/<ID>/ degerini yazin.")
         page, ex = self.page, self.cfg["export"]
         url = self.sheet_url(app, selections)
         self.log(f"Qlik sorgusu: {selections}")

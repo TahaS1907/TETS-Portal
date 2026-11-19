@@ -25,7 +25,7 @@ kolonlar: {}
 
 # ---------------------------------------------------------------- Qlik Sense
 qlik:
-  base_url: ""             # orn: https://qliksense.sirket.com.tr
+  base_url: "https://sensedashboard.thy.com"
   sanal_proxy: ""          # adreste /sense oncesi bir on ek varsa (orn: "thy")
   tarayici: msedge         # msedge | chrome | chromium
   gorunmez: false          # true: tarayici penceresi acilmaz
@@ -37,17 +37,18 @@ qlik:
   # FA hareket raporu: tum takma/sokme/PN SN CHG hareketlerini gosteren tablo.
   # app_id / sheet_id: Qlik'te sayfayi acinca adres cubugundaki /app/<APP_ID>/sheet/<SHEET_ID>/
   # object_id: tabloya sag tik > "Paylas/Embed" veya kalibrasyon ile bulunur.
+  # ROT FA PN History
   fa_hareket:
-    app_id: ""
-    sheet_id: ""
-    object_id: ""
+    app_id: "609d5232-db11-4195-90d1-483cffa420e1"
+    sheet_id: ""           # TODO: tablonun oldugu sayfanin adresindeki /sheet/<ID>/
+    object_id: ""          # TODO: tablonun nesne kimligi (bos kalirsa sayfadaki ilk tablo kullanilir)
     alanlar:               # Qlik'teki alan (field) adlari - secim yapmak icin
       pn: "PN"
       sn: "SN"
-      grb: "GRB"
-      aircraft: "A/C"
-      nha_pn: "NHA PN"
-      nha_sn: "NHA SN"
+      grb: "GOODS_RCVD_BATCH"
+      aircraft: "AC"
+      nha_pn: "NHA_PN"
+      nha_sn: "NHA_SN"
 
   # (Opsiyonel) FA listesi: sadece FA No girilince PN/SN bulmak icin
   fa_listesi:
@@ -59,7 +60,7 @@ qlik:
 
   # Teknik Envanter Takibi > Null Veri Duzenleme Raporu
   envanter:
-    app_id: ""
+    app_id: "410f6aca-0d09-4832-9fda-af9287922832"
     sheet_id: ""
     object_id: ""
     durum_alani: "Durum"   # true/false secilen alan

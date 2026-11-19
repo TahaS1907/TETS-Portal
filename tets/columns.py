@@ -14,25 +14,27 @@ from .normalize import clean
 
 CANONICAL = [
     "date", "tx_type", "pn", "sn", "grb", "description", "pn_group", "aircraft",
-    "position", "nha_pn", "nha_sn", "wo", "location", "new_pn", "new_sn", "fa_no",
+    "position", "nla_position", "nha_pn", "nha_sn", "wo", "location", "new_pn", "new_sn", "fa_no",
 ]
 
 ALIASES: dict[str, list[str]] = {
-    "date": ["DATE", "TARIH", "TRANSACTIONDATE", "TXDATE", "ISLEMTARIHI", "HAREKETTARIHI",
+    "date": ["CREATEDDATE", "DATE", "TARIH", "TRANSACTIONDATE", "TXDATE", "ISLEMTARIHI", "HAREKETTARIHI",
              "MOVEMENTDATE", "ACTIONDATE", "INSTALLDATE", "REMOVALDATE", "BOOKINGDATE"],
     "tx_type": ["TRANSACTION", "TRANSACTIONTYPE", "TXTYPE", "TYPE", "HAREKET", "HAREKETTIPI",
                 "HAREKETTURU", "ISLEM", "ISLEMTIPI", "MOVEMENT", "MOVEMENTTYPE", "ACTION", "EVENT"],
     "pn": ["PN", "PARTNO", "PARTNUMBER", "PARCANO", "PARCANUMARASI", "MATERIAL", "MALZEME"],
     "sn": ["SN", "SERIALNO", "SERIALNUMBER", "SERINO", "SERINUMARASI", "SERIAL"],
-    "grb": ["GRB", "GRBNO", "GRBNUMBER", "BATCH", "BATCHNO", "LABEL", "LABELNO", "ETIKET"],
-    "description": ["DESCRIPTION", "DESC", "ACIKLAMA", "TANIM", "PARTDESCRIPTION", "PARCAADI",
+    "grb": ["GOODSRCVDBATCH", "GOODSRECEIVEDBATCH", "GRB", "GRBNO", "GRBNUMBER", "BATCH", "BATCHNO", "LABEL", "LABELNO", "ETIKET"],
+    "description": ["PNDESCRIPTION", "DESCRIPTION", "DESC", "ACIKLAMA", "TANIM", "PARTDESCRIPTION", "PARCAADI",
                     "PARCATANIMI", "NOMENCLATURE"],
     "pn_group": ["PNGROUP", "PNGRUP", "PNGRUBU", "PARTGROUP", "GRUP", "GROUP", "INTERCHANGEGROUP",
                  "INTERCHANGEABILITY", "IPCGROUP", "ALTERNATEGROUP"],
     "aircraft": ["AC", "AIRCRAFT", "ACREG", "AIRCRAFTREG", "REGISTRATION", "TAIL", "TAILNO",
                  "TESCIL", "UCAK", "UCAKTESCIL"],
-    "position": ["POSITION", "POS", "POZISYON", "INSTALLPOSITION", "ACPOSITION", "POSITIONCODE",
+    "position": ["ACPOSITION", "POSITION", "POS", "POZISYON", "INSTALLPOSITION", "POSITIONCODE",
                  "LOCATIONONAC"],
+    # ust assy icindeki pozisyon (ROT FA PN History: NLA_POSITION)
+    "nla_position": ["NLAPOSITION", "NHAPOSITION", "ASSYPOSITION"],
     "nha_pn": ["NHAPN", "NHAPARTNO", "NHAPARTNUMBER", "PARENTPN", "USTASSYPN", "USTASSYPARCANO",
                "ASSYPN", "HIGHERASSYPN"],
     "nha_sn": ["NHASN", "NHASERIALNO", "NHASERIALNUMBER", "PARENTSN", "USTASSYSN", "ASSYSN",
@@ -98,6 +100,11 @@ def normalize_frame(df: pd.DataFrame, overrides: dict | None = None, source: str
             out[c] = out[c].map(clean)
     for c in ("pn", "sn", "grb", "aircraft", "nha_pn", "nha_sn", "wo", "new_pn", "new_sn"):
         out[c + "_k"] = out[c].map(key)
+    # NHA hareketlerinde pozisyon = ust assy icindeki pozisyon (NLA_POSITION)
+    nha_rows = out["tx_type"].isin(["NHA INSTALL", "NHA REMOVE"]) & (out["nla_position"] != "")
+    out.loc[nha_rows, "position"] = out.loc[nha_rows, "nla_position"]
+    no_pos = (out["position"] == "") & (out["nla_position"] != "")
+    out.loc[no_pos, "position"] = out.loc[no_pos, "nla_position"]
     out["source"] = source
     out = out[out["date"].notna() & (out["pn_k"] != "")]
     out["seq"] = range(len(out))  # ayni gun icindeki orijinal sira

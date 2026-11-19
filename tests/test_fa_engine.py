@@ -130,3 +130,21 @@ def test_qlik_url():
     url = s.sheet_url({"app_id": "A1", "sheet_id": "S1"}, {"PN": "CFM56-7B26/3", "SN": ""})
     assert url == ("https://qlik.local/sense/app/A1/sheet/S1/state/analysis/options/clearselections"
                    "/select/PN/%5BCFM56-7B26%2F3%5D")
+
+
+def test_rot_fa_pn_history_kolonlari():
+    """Qlik'teki ROT FA PN History tablosunun gercek basliklari taninmali."""
+    from tets.columns import map_columns
+    cols = ["PN", "SN", "PN_DESCRIPTION", "NHA_PN", "NHA_SN", "NLA_POSITION", "PN_GROUP", "GOODS_RCVD_BATCH",
+            "BATCH", "TRANSACTION_TYPE", "AC", "AC_POSITION", "LOCATION", "CREATED_DATE", "CREATED_BY", "WO",
+            "TASK_CARD", "ORDER_TYPE", "ORDER_NO", "ORDER_LINE", "UNIT_COST", "Count(AC)"]
+    m = map_columns(pd.DataFrame(columns=cols))
+    assert m == {"date": "CREATED_DATE", "tx_type": "TRANSACTION_TYPE", "pn": "PN", "sn": "SN",
+                 "grb": "GOODS_RCVD_BATCH", "description": "PN_DESCRIPTION", "pn_group": "PN_GROUP",
+                 "aircraft": "AC", "position": "AC_POSITION", "nla_position": "NLA_POSITION",
+                 "nha_pn": "NHA_PN", "nha_sn": "NHA_SN", "wo": "WO", "location": "LOCATION"}
+
+
+def test_nha_pozisyonu_nla_kolonundan(engine):
+    r = engine.trace("BRG-55", "N1")
+    assert r.steps[0].removed["position"] == "INBD"

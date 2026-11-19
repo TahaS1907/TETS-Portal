@@ -23,7 +23,7 @@ DEFAULTS: dict = {
     },
     "kolonlar": {},  # ornek: {pn: "Part Number", grb: "GRB No"}
     "qlik": {
-        "base_url": "",
+        "base_url": "https://sensedashboard.thy.com",
         "sanal_proxy": "",
         "giris": {
             "mod": "form",           # form | windows | manuel
@@ -43,13 +43,13 @@ DEFAULTS: dict = {
             "link_selector": "a.export-url, a[href*='TempContent'], a[download]",
         },
         "fa_hareket": {
-            "app_id": "", "sheet_id": "", "object_id": "",
-            "alanlar": {"pn": "PN", "sn": "SN", "grb": "GRB", "aircraft": "A/C",
-                        "nha_pn": "NHA PN", "nha_sn": "NHA SN"},
+            "app_id": "609d5232-db11-4195-90d1-483cffa420e1", "sheet_id": "", "object_id": "",
+            "alanlar": {"pn": "PN", "sn": "SN", "grb": "GOODS_RCVD_BATCH", "aircraft": "AC",
+                        "nha_pn": "NHA_PN", "nha_sn": "NHA_SN"},
         },
         "fa_listesi": {"app_id": "", "sheet_id": "", "object_id": "", "alanlar": {"fa_no": "FA No"}},
         "envanter": {
-            "app_id": "", "sheet_id": "", "object_id": "",
+            "app_id": "410f6aca-0d09-4832-9fda-af9287922832", "sheet_id": "", "object_id": "",
             "durum_alani": "Durum", "durum_degeri": "false",
             "notes_kolonu": "Notes",
         },
