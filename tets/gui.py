@@ -31,6 +31,13 @@ def open_path(p):
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", p])
 
 
+METHOD_LABELS = {
+    "otomatik": "Otomatik - once ekrandan oku (indirmeden), olmazsa Download as ile indir",
+    "ekran": "Sadece ekrandan oku (Download as kullanma)",
+    "menu": "Sadece Download as ile indir",
+}
+
+
 class Worker(threading.Thread):
     """Sirali is kuyrugu. Playwright nesneleri yalnizca bu thread'de yasar."""
 
@@ -194,6 +201,12 @@ class App(tk.Tk):
         nb.add(tab, text="  Ayarlar  ")
         ttk.Label(tab, text=f"Ayar dosyasi: {CONFIG_PATH}").pack(anchor="w")
         ttk.Label(tab, text=f"Rapor klasoru: {self.cfg['cikti_klasoru']}").pack(anchor="w", pady=(0, 10))
+        ttk.Label(tab, text="Qlik'ten veri okuma yontemi:").pack(anchor="w")
+        cur = self.cfg["qlik"].get("export_yontemi", "otomatik")
+        self.method_cb = ttk.Combobox(tab, values=list(METHOD_LABELS.values()), state="readonly", width=70)
+        self.method_cb.set(METHOD_LABELS.get(cur, METHOD_LABELS["otomatik"]))
+        self.method_cb.pack(anchor="w", pady=(2, 12))
+        self.method_cb.bind("<<ComboboxSelected>>", self._set_method)
         for text, cmd in (("config.yaml'i ac", lambda: open_path(ensure_user_config())),
                           ("Ayarlari yeniden yukle", self._reload),
                           ("Rapor klasorunu ac", self._open_out_dir),
@@ -337,6 +350,20 @@ class App(tk.Tk):
         self.worker.submit(lambda w: w.reset_source())
         messagebox.showinfo("Ornek veri", f"Ornek veri yuklendi. 'FA'i Bul' ile deneyin.\n"
                                           f"Toplu deneme icin liste: {f}")
+
+    def _set_method(self, _e=None):
+        from .config import save_preference
+        label = self.method_cb.get()
+        value = next(k for k, v in METHOD_LABELS.items() if v == label)
+        self.cfg["qlik"]["export_yontemi"] = value
+        save_preference("export_yontemi", value)
+
+        def job(w):
+            if w.session is not None:
+                w.session.cfg["export_yontemi"] = value
+                w.session.good_method = ""
+        self.worker.submit(job)
+        self.status.set(f"Okuma yontemi: {label}")
 
     def _forget(self):
         from .config import forget_learned

@@ -8,7 +8,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.yaml"
-LEARNED_PATH = ROOT / "ogrenilen_ayarlar.yaml"  # uygulamanin kendi buldugu Qlik sayfa kimlikleri
+LEARNED_PATH = ROOT / "ogrenilen_ayarlar.yaml"
+PREF_PATH = ROOT / "kullanici_tercihleri.yaml"   # arayuzden secilen tercihler (orn. okuma yontemi)  # uygulamanin kendi buldugu Qlik sayfa kimlikleri
 
 DEFAULTS: dict = {
     "fa": {
@@ -19,6 +20,10 @@ DEFAULTS: dict = {
         "min_skor": 45,              # bu skorun altindaki aday eslesme sayilmaz (0-100)
         "belirsizlik_farki": 6,      # ilk iki aday arasi fark bundan azsa uyar
         "aciklama_esik": 0.55,
+        # Qlik'ten okunan tabloda bulunmasi gereken kolonlar. Biri eksikse (orn. ekranda gorunmeyen kolon)
+        # o okuma kullanilmaz, Download as ile indirilir. Boylece eksik veriyle yanlis sonuc cikmaz.
+        "zorunlu_kolonlar": ["date", "tx_type", "pn", "sn", "grb", "description", "pn_group", "aircraft",
+                             "position", "nha_pn", "nha_sn", "wo"],
         "tekli_excel_rapor": False,  # tekli FA sorgusunda Excel rapor yazilsin mi (toplu sorguda hep yazilir)       # PN/grup tutmazsa aciklama benzerligi en az bu olmali
         "motor_pn_onekleri": ["CFM", "LEAP", "V25", "PW", "GE90", "GENX", "TRENT", "CF6", "CF34", "PW1"],
         "motor_aciklama_regex": r"^(ENGINE|ENG|MOTOR|POWER ?PLANT)\b(?!.*\b(VALVE|SENSOR|PUMP|MOUNT|COWL|BRACKET|HOSE|DUCT|FILTER|SWITCH|HARNESS|SEAL|STARTER|GENERATOR|CONTROL|PROBE)\b)",
@@ -39,7 +44,7 @@ DEFAULTS: dict = {
         "gorunmez": False,
         "zaman_asimi_sn": 90,
         "bekleme_sn": 600,
-        "export_yontemi": "otomatik",  # otomatik (sirayla dener) | sayfa | ekran | motor | menu
+        "export_yontemi": "otomatik",  # otomatik: once indirmeden (ekrandan) okur, olmazsa Download as | ekran | menu
         "ekran_max_satir": 5000,
         "motor_url": "",               # bos: wss://<base_url>/app/
         "max_satir": 200000,          # kullanicinin giris/sayfa secimi icin beklenen sure
@@ -92,6 +97,11 @@ def load_config(path: str | Path | None = None) -> dict:
     if LEARNED_PATH.exists():
         with open(LEARNED_PATH, encoding="utf-8") as f:
             _fill_empty(cfg, yaml.safe_load(f) or {})
+    if PREF_PATH.exists():
+        with open(PREF_PATH, encoding="utf-8") as f:
+            pref = yaml.safe_load(f) or {}
+        if pref.get("export_yontemi"):
+            cfg["qlik"]["export_yontemi"] = pref["export_yontemi"]
     for sec in ("fa_hareket", "fa_listesi", "envanter"):
         cfg["qlik"][sec]["_bolum"] = sec
     out_dir = Path(cfg["cikti_klasoru"])
@@ -129,3 +139,13 @@ def save_learned(section: str, values: dict):
 def forget_learned():
     if LEARNED_PATH.exists():
         LEARNED_PATH.unlink()
+
+
+def save_preference(name: str, value):
+    data = {}
+    if PREF_PATH.exists():
+        with open(PREF_PATH, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    data[name] = value
+    with open(PREF_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True)

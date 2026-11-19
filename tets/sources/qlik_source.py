@@ -72,6 +72,7 @@ class QlikError(RuntimeError):
 class QlikSession:
     def __init__(self, cfg: dict, username: str = "", password: str = "", log=None):
         self.cfg = cfg["qlik"]
+        self.cfg_root = cfg
         self.username, self.password = username, password
         self.log = log or (lambda m: None)
         self.timeout = int(self.cfg["zaman_asimi_sn"]) * 1000
@@ -266,18 +267,22 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
-    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "menu": "sag tik > Download as > Apply",
-               "ekran": "filtre + ekrandan okuma", "motor": "motor (WebSocket) baglantisi"}
+    # Otomatik modda deneme sirasi: indirmeden okuma yollari once, "Download as" yedekte.
+    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "ekran": "filtre + ekrandan okuma (indirmeden)",
+               "menu": "sag tik > Download as > Apply", "motor": "motor (WebSocket) baglantisi"}
+    CHOICES = {"otomatik": ["sayfa", "ekran", "menu", "motor"], "ekran": ["ekran"], "menu": ["menu"],
+               "sayfa": ["sayfa"], "motor": ["motor"]}
 
-    def export(self, app: dict, selections: dict, must_have: list[str] | None = None) -> pd.DataFrame:
+    def export(self, app: dict, selections: dict, must_have: list[str] | None = None,
+               validate=None, methods: list[str] | None = None) -> pd.DataFrame:
         """Filtreleri uygulayip tablo verisini alir.
 
         Yontemler sirayla denenir; ise yarayan yontem oturum boyunca hatirlanir ve hep o kullanilir.
         """
         self.resolve_sheet(app)
         chosen = self.cfg.get("export_yontemi", "otomatik")
-        order = list(self.METHODS) if chosen == "otomatik" else [chosen]
-        if self.good_method in order:
+        order = list(methods or self.CHOICES.get(chosen, self.CHOICES["otomatik"]))
+        if self.good_method in order and not methods:
             order.remove(self.good_method)
             order.insert(0, self.good_method)
         errors, redetected = [], False
@@ -295,22 +300,25 @@ class QlikSession:
                 else:
                     df = self.export_menu(app, selections)
                 # Yanlis nesnenin dosyasi indiyse (orn. sadece 'AC' kolonu) kullanma, siradaki yonteme gec
-                if len(df.columns) and must_have:
+                miss = []
+                if len(df.columns) and validate:
+                    miss = validate(df)        # orn. tarih/hareket/PN/SN kolonlari eksik mi
+                elif len(df.columns) and must_have:
                     have = {re.sub(r"[^A-Z0-9]", "", str(c).upper()) for c in df.columns}
                     miss = [c for c in must_have if re.sub(r"[^A-Z0-9]", "", c.upper()) not in have]
-                    if miss:
-                        if not redetected:
-                            # kayitli nesne yanlis (filtre kutusu vb.): unut, en buyuk tabloyu bul, tekrar dene
-                            redetected = True
-                            tid = self.detect_table()
-                            self.log(f"  inen tabloda {miss} yok; tablo yeniden bulundu: {tid}")
-                            if tid and tid != app.get("object_id"):
-                                app["object_id"] = tid
-                                if app.get("_bolum"):
-                                    save_learned(app["_bolum"], {"object_id": tid})
-                                i -= 1
-                                continue
-                        raise QlikError(f"inen tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
+                if miss:
+                    if not redetected:
+                        # kayitli nesne yanlis (filtre kutusu vb.): unut, en buyuk tabloyu bul, tekrar dene
+                        redetected = True
+                        tid = self.detect_table()
+                        self.log(f"  okunan tabloda {miss} yok; tablo yeniden bulundu: {tid}")
+                        if tid and tid != app.get("object_id"):
+                            app["object_id"] = tid
+                            if app.get("_bolum"):
+                                save_learned(app["_bolum"], {"object_id": tid})
+                            i -= 1
+                            continue
+                    raise QlikError(f"okunan tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
             except Exception as e:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
                 errors.append(f"{self.METHODS[m]}: {msg}")
@@ -473,11 +481,19 @@ class QlikSource(DataSource):
         self.overrides = cfg.get("kolonlar", {})
         self._cache: dict[tuple, FrameSource] = {}
 
+    def _missing_columns(self, df: pd.DataFrame) -> list[str]:
+        """FA motorunun ihtiyac duydugu kolonlardan eksik olanlar (ekrandan eksik okuma vb.)."""
+        from ..columns import map_columns
+        found = map_columns(df, self.overrides)
+        need = self.s.cfg_root["fa"].get("zorunlu_kolonlar") or ["date", "tx_type", "pn", "sn"]
+        return [c for c in need if c not in found]
+
     def _frame(self, selections: dict) -> FrameSource:
         sel = {self.f.get(k, k): v for k, v in selections.items() if v}
         ck = tuple(sorted((k, key(v)) for k, v in sel.items()))
         if ck not in self._cache:
-            raw = self.s.export(self.app, sel, [self.f.get("pn", "PN"), self.f.get("sn", "SN")])
+            raw = self.s.export(self.app, sel, [self.f.get("pn", "PN"), self.f.get("sn", "SN")],
+                                validate=self._missing_columns)
             df = normalize_frame(raw, self.overrides, source="qlik") if not raw.empty else _empty()
             self._cache[ck] = FrameSource(df)
         return self._cache[ck]
