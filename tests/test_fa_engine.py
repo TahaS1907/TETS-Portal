@@ -103,7 +103,7 @@ def test_toplu(files):
     src = open_source(cfg, "excel", [files[0]])
     cfg = {**cfg, "cikti_klasoru": str(files[0].parent)}
     results, path = run_batch(src, cfg, files[1])
-    assert len(results) == 11 and path.exists()
+    assert len(results) == 12 and path.exists()
     assert all(r.status != "HATA" for r in results)
 
 
@@ -148,3 +148,24 @@ def test_rot_fa_pn_history_kolonlari():
 def test_nha_pozisyonu_nla_kolonundan(engine):
     r = engine.trace("BRG-55", "N1")
     assert r.steps[0].removed["position"] == "INBD"
+
+
+def test_s6_son_hareket_pnsn_chg_grb_ile_devam(engine):
+    """Sadece PN+SN girildi; son hareket PN SN CHG. Yeni PN/SN GRB'den bulunup dongu devam etmeli."""
+    r = engine.trace("5500-1", "P1")
+    assert r.status == "FA_ATA" and r.final["sn"] == "P7"
+    assert r.changes and r.changes[0]["new"] == "5500-2 / P1X" and 6 in r.scenarios
+
+
+def test_ayni_grb_paralel_parca_degisim_sayilmaz():
+    """GRB'si ayni ama eski parca da hareket etmeye devam ediyorsa PN/SN degisimi sayilmamali."""
+    import pandas as pd
+    from tests.sample_data import COLS, R
+    from tets.columns import normalize_frame
+    from tets.sources.base import FrameSource
+    rows = [R("01.01.2025", "STORE RECEIPT", "A-1", "S1", "GX", "X"),
+            R("02.01.2025", "STORE RECEIPT", "A-1", "S2", "GX", "X"),
+            R("05.01.2025", "AC REMOVE", "A-1", "S1", "GX", "X", ac="TC-X", wo="W")]
+    eng = FAEngine(FrameSource(normalize_frame(pd.DataFrame(rows, columns=COLS))), load_config())
+    r = eng.trace("A-1", "S1")
+    assert not r.changes and r.status == "FA_DOGRU"

@@ -165,6 +165,7 @@ class FAEngine:
         Doner: (birlesik_gecmis, degisimler, kimlik_anahtarlari, guncel_kimlik_dict)
         """
         hist = hist.sort_values(["date", "seq"], kind="stable").reset_index(drop=True)
+        grb_given = bool(key(grb))
         if key(pn) and key(sn):
             ident = (key(pn), key(sn))
             disp = (pn, sn)
@@ -174,6 +175,13 @@ class FAEngine:
         if not key(grb):
             g = hist[(hist.pn_k == ident[0]) & (hist.sn_k == ident[1]) & (hist.grb_k != "")]
             grb = g.grb.iloc[-1] if not g.empty else ""
+        # Son hareketi PN SN CHG (veya takma disi bir hareket) olan parcada yeni PN/SN sadece GRB
+        # aramasinda gorunur: GRB ile de ara ve gecmise ekle (Senaryo 6).
+        if key(grb) and not grb_given and len(hist):
+            if (hist.tx_type == PNSN_CHG).any() or hist.iloc[-1].tx_type not in INSTALLS:
+                self.log(f"GRB {grb} ile de araniyor (PN/SN degisimi kontrolu)")
+                hist = self._merge(hist, self._history("", "", grb))
+        same_grb = (lambda x: x.grb_k == key(grb)) if key(grb) else (lambda x: True)
         seen, changes, since = {ident}, [], pd.Timestamp.min
         for _ in range(6):
             mine = hist[(hist.pn_k == ident[0]) & (hist.sn_k == ident[1]) & (hist.date >= since)]
@@ -185,7 +193,8 @@ class FAEngine:
                     new = (r.new_pn_k or ident[0], r.new_sn_k or ident[1])
                     ndisp, d, how = (r.new_pn or r.pn, r.new_sn or r.sn), r.date, "PN SN CHG hareketi"
                 else:
-                    later = hist[(hist.date >= r.date) & ~hist.apply(lambda x: (x.pn_k, x.sn_k) in seen, axis=1)]
+                    later = hist[(hist.date >= r.date)
+                                 & hist.apply(lambda x: (x.pn_k, x.sn_k) not in seen and same_grb(x), axis=1)]
                     if not later.empty:
                         x = later.iloc[0]
                         new, ndisp, d, how = (x.pn_k, x.sn_k), (x.pn, x.sn), r.date, "PN SN CHG + GRB"
@@ -194,7 +203,10 @@ class FAEngine:
                              & ~hist.apply(lambda x: (x.pn_k, x.sn_k) in seen, axis=1)]
                 if not later.empty:
                     x = later.iloc[0]
-                    new, ndisp, d, how = (x.pn_k, x.sn_k), (x.pn, x.sn), x.date, "ayni GRB farkli PN/SN"
+                    # sadece ardisiklik varsa degisim say: eski kimligin bundan sonra hareketi olmamali
+                    old_after = hist[(hist.pn_k == ident[0]) & (hist.sn_k == ident[1]) & (hist.date > x.date)]
+                    if old_after.empty:
+                        new, ndisp, d, how = (x.pn_k, x.sn_k), (x.pn, x.sn), x.date, "ayni GRB farkli PN/SN"
             if new is None or new in seen:
                 break
             changes.append({"date": d, "old": f"{disp[0]} / {disp[1]}", "new": f"{ndisp[0]} / {ndisp[1]}",

@@ -244,7 +244,7 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
-    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "menu": "sag tik > Download as > Apply",
+    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "menu": "sag tik > Download as > Data > Apply",
                "ekran": "filtre + ekrandan okuma", "motor": "motor (WebSocket) baglantisi"}
 
     def export(self, app: dict, selections: dict, must_have: list[str] | None = None) -> pd.DataFrame:

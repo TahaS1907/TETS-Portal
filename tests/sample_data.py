@@ -68,6 +68,12 @@ def rows():
         R("01.09.2025", "PN SN CHG", "7001", "Z1", "G800", "FAN COOLING", "", loc="IST", new_pn="7001-B", new_sn="Z1B"),
         R("01.10.2025", "AC REMOVE", "7001", "Z5", "G801", "FAN COOLING", "", "TC-JAB", "AVIONICS FAN", wo="W10"),
         R("01.10.2025", "AC INSTALL", "7001-B", "Z1B", "G800", "FAN COOLING", "", "TC-JAB", "AVIONICS FAN", wo="W10"),
+        # ---------------- S6d: son hareket PN SN CHG (yeni PN/SN kolonsuz); yeni kimlik sadece GRB'de gorunur
+        R("01.03.2025", "AC REMOVE", "5500-1", "P1", "G900", "VALVE FUEL", "", "TC-JAC", "LH WING", wo="W12"),
+        R("10.03.2025", "PN SN CHG", "5500-1", "P1", "G900", "VALVE FUEL", "", loc="IST"),
+        R("10.03.2025", "STORE RECEIPT", "5500-2", "P1X", "G900", "VALVE FUEL", "", loc="IST"),
+        R("01.04.2025", "AC REMOVE", "5500-2", "P7", "G901", "VALVE FUEL", "", "TC-JAD", "LH WING", wo="W13"),
+        R("01.04.2025", "AC INSTALL", "5500-2", "P1X", "G900", "VALVE FUEL", "", "TC-JAD", "LH WING", wo="W13"),
         # ---------------- FA dogru: parca sokulmus, bir daha takilmamis
         R("11.11.2025", "AC REMOVE", "8800", "K1", "", "COMPUTER FMC", "", "TC-JAA", "E/E BAY", wo="W11"),
     ]
@@ -89,6 +95,7 @@ FA_LIST = [
     ("FA-1009", "6677-1", "Y1", "G700"),
     ("FA-1010", "7001", "Z1", "G800"),
     ("FA-1011", "8800", "K1", ""),
+    ("FA-1012", "5500-1", "P1", ""),
 ]
 
 
