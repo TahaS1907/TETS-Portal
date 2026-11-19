@@ -8,6 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.yaml"
+LEARNED_PATH = ROOT / "ogrenilen_ayarlar.yaml"  # uygulamanin kendi buldugu Qlik sayfa kimlikleri
 
 DEFAULTS: dict = {
     "fa": {
@@ -26,7 +27,7 @@ DEFAULTS: dict = {
         "base_url": "https://sensedashboard.thy.com",
         "sanal_proxy": "",
         "giris": {
-            "mod": "form",           # form | windows | manuel
+            "mod": "manuel",         # manuel: sifre tarayiciya girilir | form | windows
             "kullanici_selector": "input[name='username'], #username-input, input[type='email'], input[name='loginfmt']",
             "sifre_selector": "input[type='password']",
             "gonder_selector": "button[type='submit'], #loginbtn, input[type='submit']",
@@ -36,6 +37,7 @@ DEFAULTS: dict = {
         "tarayici_yolu": "",         # ozel tarayici exe yolu (opsiyonel)
         "gorunmez": False,
         "zaman_asimi_sn": 90,
+        "bekleme_sn": 600,          # kullanicinin giris/sayfa secimi icin beklenen sure
         "export": {
             "sag_tik_menu": ["Download", "İndir", "Indir", "Export", "Dışa aktar"],
             "veri_secenegi": ["Data", "Veri", "Export data", "Verileri dışa aktar"],
@@ -43,12 +45,14 @@ DEFAULTS: dict = {
             "link_selector": "a.export-url, a[href*='TempContent'], a[download]",
         },
         "fa_hareket": {
+            "ad": "ROT FA PN History",
             "app_id": "609d5232-db11-4195-90d1-483cffa420e1", "sheet_id": "", "object_id": "",
             "alanlar": {"pn": "PN", "sn": "SN", "grb": "GOODS_RCVD_BATCH", "aircraft": "AC",
                         "nha_pn": "NHA_PN", "nha_sn": "NHA_SN"},
         },
-        "fa_listesi": {"app_id": "", "sheet_id": "", "object_id": "", "alanlar": {"fa_no": "FA No"}},
+        "fa_listesi": {"ad": "FA listesi", "app_id": "", "sheet_id": "", "object_id": "", "alanlar": {"fa_no": "FA No"}},
         "envanter": {
+            "ad": "Teknik Envanter Takibi - Null Veri Duzenleme Raporu",
             "app_id": "410f6aca-0d09-4832-9fda-af9287922832", "sheet_id": "", "object_id": "",
             "durum_alani": "Durum", "durum_degeri": "false",
             "notes_kolonu": "Notes",
@@ -77,6 +81,11 @@ def load_config(path: str | Path | None = None) -> dict:
         with open(p, encoding="utf-8") as f:
             user = yaml.safe_load(f) or {}
     cfg = _merge(DEFAULTS, user)
+    if LEARNED_PATH.exists():
+        with open(LEARNED_PATH, encoding="utf-8") as f:
+            _fill_empty(cfg, yaml.safe_load(f) or {})
+    for sec in ("fa_hareket", "fa_listesi", "envanter"):
+        cfg["qlik"][sec]["_bolum"] = sec
     out_dir = Path(cfg["cikti_klasoru"])
     cfg["cikti_klasoru"] = str(out_dir if out_dir.is_absolute() else ROOT / out_dir)
     return cfg
@@ -88,3 +97,27 @@ def ensure_user_config() -> Path:
         import shutil
         shutil.copy(ROOT / "config.ornek.yaml", CONFIG_PATH)
     return CONFIG_PATH
+
+
+def _fill_empty(cfg: dict, learned: dict):
+    for k, v in learned.items():
+        if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+            _fill_empty(cfg[k], v)
+        elif cfg.get(k) in ("", None):
+            cfg[k] = v
+
+
+def save_learned(section: str, values: dict):
+    """Kullanicinin tarayicida actigi Qlik sayfasini bir sonraki sefer icin saklar."""
+    data = {}
+    if LEARNED_PATH.exists():
+        with open(LEARNED_PATH, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    data.setdefault("qlik", {}).setdefault(section, {}).update(values)
+    with open(LEARNED_PATH, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+
+
+def forget_learned():
+    if LEARNED_PATH.exists():
+        LEARNED_PATH.unlink()

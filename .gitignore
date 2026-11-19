@@ -5,3 +5,4 @@ __pycache__/
 Raporlar/
 config.yaml
 ~$*.xlsx
+ogrenilen_ayarlar.yaml

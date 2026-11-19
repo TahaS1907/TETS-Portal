@@ -13,6 +13,7 @@ secici/etiketler config.yaml'dan degistirilebilir. Ayar bulmak icin
 """
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 import time
@@ -22,9 +23,14 @@ from urllib.parse import quote
 import pandas as pd
 
 from ..columns import normalize_frame
+from ..config import save_learned
 from ..normalize import key
 from .base import DataSource, FrameSource
 from .excel_source import _fix_header
+
+
+SHEET_RE = re.compile(r"/sense/app/([^/?#]+)/sheet/([^/?#]+)")
+TABLE_SEL = ".qv-object-table, .qv-object-sn-table, .qv-object-pivot-table, .qv-object-sn-pivot-table, .qv-object"
 
 
 class QlikError(RuntimeError):
@@ -57,32 +63,44 @@ class QlikSession:
             raise QlikError("config.yaml > qlik > base_url bos. Qlik Sense adresini girin.")
         self._pw = sync_playwright().start()
         channel = self.cfg.get("tarayici") or None
-        launch = dict(headless=bool(self.cfg.get("gorunmez")))
+        opts = dict(headless=bool(self.cfg.get("gorunmez")), accept_downloads=True, ignore_https_errors=True,
+                    no_viewport=True, args=["--start-maximized"])
+        if self.cfg["giris"]["mod"] == "windows" and self.username:
+            opts["http_credentials"] = {"username": self.username, "password": self.password}
         if self.cfg.get("tarayici_yolu"):
-            launch["executable_path"] = self.cfg["tarayici_yolu"]
+            opts["executable_path"] = self.cfg["tarayici_yolu"]
             channel = "chromium"
+        # Kalici profil: oturum cerezleri saklanir, cogu zaman sifre tekrar sorulmaz.
+        profile = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "TETS-Portal" / f"profil_{channel or 'chromium'}"
+        profile.mkdir(parents=True, exist_ok=True)
         try:
-            self.browser = self._pw.chromium.launch(channel=None if channel == "chromium" else channel, **launch)
+            self.context = self._pw.chromium.launch_persistent_context(
+                str(profile), channel=None if channel == "chromium" else channel, **opts)
         except Exception:
             self.log(f"'{channel}' acilamadi, Playwright Chromium deneniyor")
-            self.browser = self._pw.chromium.launch(**launch)
-        ctx = dict(accept_downloads=True, ignore_https_errors=True)
-        if self.cfg["giris"]["mod"] == "windows" and self.username:
-            ctx["http_credentials"] = {"username": self.username, "password": self.password}
-        self.context = self.browser.new_context(**ctx)
+            self.context = self._pw.chromium.launch_persistent_context(str(profile), **opts)
         self.context.set_default_timeout(self.timeout)
-        self.page = self.context.new_page()
+        self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.login()
 
+    @property
+    def alive(self) -> bool:
+        try:
+            return self._pw is not None and self.page is not None and not self.page.is_closed()
+        except Exception:
+            return False
+
     def close(self):
-        for obj in (self.context, self.browser):
+        try:
+            self.context and self.context.close()
+        except Exception:
+            pass
+        if self._pw:
             try:
-                obj and obj.close()
+                self._pw.stop()
             except Exception:
                 pass
-        if self._pw:
-            self._pw.stop()
-        self._pw = None
+        self._pw = self.context = self.page = None
 
     # ------------------------------------------------------------------ giris
     def _root(self) -> str:
@@ -90,19 +108,40 @@ class QlikSession:
         proxy = self.cfg.get("sanal_proxy", "").strip("/")
         return f"{base}/{proxy}" if proxy else base
 
+    def _logged_in(self) -> bool:
+        url = self.page.url
+        return url.startswith(self._root()) and ("/hub" in url or "/sense/app/" in url) \
+            and "login" not in url.lower()
+
+    def _wait(self, cond, what: str):
+        """Kullanici tarayicida bir sey yaparken bekler (tarayici kapatilirsa hata verir)."""
+        deadline = time.time() + int(self.cfg.get("bekleme_sn", 600))
+        while time.time() < deadline:
+            if not self.alive:
+                raise QlikError("Tarayici kapatildi.")
+            try:
+                if cond():
+                    return
+                self.page.wait_for_timeout(700)
+            except QlikError:
+                raise
+            except Exception:
+                time.sleep(0.7)  # sayfa gecisi sirasinda olabilir
+        raise QlikError(f"Zaman asimi: {what}")
+
     def login(self):
         g = self.cfg["giris"]
         page = self.page
-        self.log("Qlik Sense aciliyor...")
+        self.log("» Qlik Sense aciliyor...")
         page.goto(self._root() + "/hub", wait_until="domcontentloaded")
-        ok = g.get("basarili_url_icerir", "/hub")
-        if g["mod"] == "form":
-            user = page.locator(g["kullanici_selector"]).first
+        page.wait_for_timeout(1500)
+        if self._logged_in():
+            self.log("» Oturum zaten acik.")
+            return
+        if g["mod"] == "form" and self.username and self.password:
             try:
+                user = page.locator(g["kullanici_selector"]).first
                 user.wait_for(state="visible", timeout=15000)
-            except Exception:
-                user = None  # SSO zaten acik olabilir
-            if user is not None:
                 user.fill(self.username)
                 pw = page.locator(g["sifre_selector"]).first
                 if not pw.is_visible():  # iki adimli (once kullanici, sonra sifre) ekranlar
@@ -110,15 +149,44 @@ class QlikSession:
                     pw.wait_for(state="visible", timeout=15000)
                 pw.fill(self.password)
                 page.locator(g["gonder_selector"]).first.click()
-        elif g["mod"] == "manuel":
-            self.log("Tarayicida giris yapin; hub acilinca devam edilecek (5 dk).")
-        deadline = time.time() + (300 if g["mod"] == "manuel" else self.timeout / 1000)
-        while time.time() < deadline:
-            if ok in page.url and "login" not in page.url.lower():
-                self.log("Giris basarili.")
-                return
-            page.wait_for_timeout(500)
-        raise QlikError(f"Giris dogrulanamadi (su anki adres: {page.url}). Sifreyi ve config ayarlarini kontrol edin.")
+            except Exception:
+                self.log("Giris formu otomatik doldurulamadi, tarayicidan giris yapin.")
+        self.log("» Tarayicida Qlik Sense'e giris yapin (sifrenizi tarayiciya girin)...")
+        self._wait(self._logged_in, "Qlik girisi yapilmadi")
+        self.log("» Giris basarili.")
+
+    def resolve_sheet(self, app: dict) -> dict:
+        """Uygulamanin tablo sayfasi bilinmiyorsa kullanicinin tarayicida acmasini bekler, sonra hatirlar."""
+        if app.get("app_id") and app.get("sheet_id"):
+            return app
+        name = app.get("ad") or "ilgili portal"
+        page, want = self.page, app.get("app_id", "")
+
+        def on_sheet():
+            m = SHEET_RE.search(page.url)
+            return bool(m) and (not want or m.group(1) == want)
+
+        if not on_sheet():
+            if want and f"/app/{want}" not in page.url:
+                page.goto(f"{self._root()}/sense/app/{want}/overview", wait_until="domcontentloaded")
+            self.log(f"» Tarayicida '{name}' icinde tablonun bulundugu sayfayi acin...")
+            self._wait(on_sheet, f"'{name}' sayfasi acilmadi")
+        m = SHEET_RE.search(page.url)
+        learned = {"app_id": m.group(1), "sheet_id": m.group(2)}
+        if not app.get("object_id"):
+            try:
+                page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=20000)
+                tid = page.locator(TABLE_SEL).first.evaluate(
+                    "e => { const t = e.closest('[tid]') || e.querySelector('[tid]'); return t ? t.getAttribute('tid') : null }")
+                if tid:
+                    learned["object_id"] = tid
+            except Exception:
+                self.log("Tablo nesnesi otomatik bulunamadi; sayfadaki ilk tablo kullanilacak.")
+        app.update(learned)
+        if app.get("_bolum"):
+            save_learned(app["_bolum"], learned)
+        self.log(f"» '{name}' sayfasi algilandi ve kaydedildi. Otomasyon basliyor.")
+        return app
 
     # ------------------------------------------------------------------ export
     def sheet_url(self, app: dict, selections: dict[str, str | list]) -> str:
@@ -155,18 +223,13 @@ class QlikSession:
         return False
 
     def export(self, app: dict, selections: dict) -> pd.DataFrame:
-        if not app.get("app_id"):
-            raise QlikError("config.yaml icinde app_id tanimli degil.")
-        if not app.get("sheet_id"):
-            raise QlikError("config.yaml icinde sheet_id tanimli degil. Tablonun bulundugu sayfayi Qlik'te "
-                            "acip adres cubugundaki /sheet/<ID>/ degerini yazin.")
+        self.resolve_sheet(app)
         page, ex = self.page, self.cfg["export"]
         url = self.sheet_url(app, selections)
         self.log(f"Qlik sorgusu: {selections}")
         page.goto(url, wait_until="domcontentloaded")
         oid = app.get("object_id", "")
-        target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else \
-            page.locator(".qv-object-table, .qv-object-pivot-table, .qv-object-sn-table, .qv-object").first
+        target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
         target.wait_for(state="visible", timeout=self.timeout)
         page.wait_for_timeout(1500)  # secimlerin uygulanmasi icin
         if page.get_by_text(re.compile(r"(No data|Veri yok|Gösterilecek veri yok)", re.I)).count():
@@ -187,7 +250,7 @@ class QlikSession:
 
     def calibrate(self, app: dict | None = None):
         """Playwright Inspector'i acar: secicileri ve export adimlarini elle bulmak icin."""
-        if app and app.get("app_id"):
+        if app and app.get("app_id") and app.get("sheet_id"):
             self.page.goto(self.sheet_url(app, {}))
         self.page.pause()
 
@@ -195,8 +258,8 @@ class QlikSession:
 class QlikSource(DataSource):
     """FA motoru icin canli Qlik veri kaynagi. Her sorgu sonucu oturum boyunca onbellekte tutulur."""
 
-    def __init__(self, session: QlikSession, cfg: dict):
-        self.s = session
+    def __init__(self, session: QlikSession, cfg: dict, owns_session: bool = True):
+        self.s, self.owns_session = session, owns_session
         self.app = cfg["qlik"]["fa_hareket"]
         self.f = self.app.get("alanlar", {})
         self.fa_app = cfg["qlik"].get("fa_listesi", {})
@@ -242,7 +305,8 @@ class QlikSource(DataSource):
         return FrameSource(_empty(), load_fa_list(tmp)).fa_lookup(fa_no)
 
     def close(self):
-        self.s.close()
+        if self.owns_session:
+            self.s.close()
 
 
 def _empty() -> pd.DataFrame:

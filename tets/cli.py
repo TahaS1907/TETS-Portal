@@ -46,12 +46,14 @@ def main(argv=None):
     cfg = load_config(a.config)
     log = lambda m: print("  ·", m, file=sys.stderr)
     pw = ""
-    if getattr(a, "qlik", False) or a.cmd in ("envanter", "kalibrasyon"):
-        pw = getpass.getpass("Qlik sifresi: ")
+    if (getattr(a, "qlik", False) or a.cmd in ("envanter", "kalibrasyon")) and a.kullanici:
+        pw = getpass.getpass("Qlik sifresi: ")  # kullanici verilmezse sifre tarayicida girilir
 
     if a.cmd == "envanter":
         from .envanter import run_envanter
-        print(run_envanter(cfg, a.kullanici, pw, a.null_notes, log))
+        from .sources.qlik_source import QlikSession
+        with QlikSession(cfg, a.kullanici, pw, log) as s:
+            print(run_envanter(cfg, s, a.null_notes, log))
         return
     if a.cmd == "kalibrasyon":
         from .sources.qlik_source import QlikSession

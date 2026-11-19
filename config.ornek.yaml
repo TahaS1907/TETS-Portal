@@ -30,8 +30,9 @@ qlik:
   tarayici: msedge         # msedge | chrome | chromium
   gorunmez: false          # true: tarayici penceresi acilmaz
   zaman_asimi_sn: 90
+  bekleme_sn: 600          # giris yapmaniz / sayfayi secmeniz icin beklenecek sure
   giris:
-    mod: form              # form: kullanici/sifre formu | windows: NTLM penceresi | manuel: siz girersiniz
+    mod: manuel            # manuel: sifreyi tarayicida siz girersiniz | form: uygulama doldurur | windows: NTLM
     basarili_url_icerir: "/hub"
 
   # FA hareket raporu: tum takma/sokme/PN SN CHG hareketlerini gosteren tablo.
@@ -40,8 +41,8 @@ qlik:
   # ROT FA PN History
   fa_hareket:
     app_id: "609d5232-db11-4195-90d1-483cffa420e1"
-    sheet_id: ""           # TODO: tablonun oldugu sayfanin adresindeki /sheet/<ID>/
-    object_id: ""          # TODO: tablonun nesne kimligi (bos kalirsa sayfadaki ilk tablo kullanilir)
+    sheet_id: ""           # bos birakin: ilk calismada tarayicida sayfayi siz acarsiniz, uygulama hatirlar
+    object_id: ""          # bos birakin: sayfadaki tablo otomatik bulunur
     alanlar:               # Qlik'teki alan (field) adlari - secim yapmak icin
       pn: "PN"
       sn: "SN"

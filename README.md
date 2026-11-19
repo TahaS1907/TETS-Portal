@@ -12,11 +12,20 @@ Kullanıcı Qlik Sense şifresini girer, uygulama portalı kendisi açar ve iste
 ## Kurulum ve çalıştırma (Windows)
 
 1. Python 3.10+ kurulu olmalı ("Add to PATH" işaretli).
-2. `KURULUM.bat` → sanal ortamı ve paketleri kurar, `config.yaml` oluşturur.
-3. `config.yaml` içinde `qlik.base_url`, `fa_hareket.app_id / sheet_id / object_id` ve alan adlarını doldurun.
-4. `BASLAT.bat` → uygulama açılır.
+2. `KURULUM.bat` → sanal ortamı ve paketleri kurar.
+3. `BASLAT.bat` → uygulama açılır.
 
-Tarayıcı olarak varsayılan **Microsoft Edge** kullanılır (şirket bilgisayarında hazır, ek indirme gerekmez).
+## Kullanım
+
+1. **Qlik'i Aç** → Edge açılır, Qlik Sense (`sensedashboard.thy.com`) gelir.
+2. Şifrenizi **tarayıcıda kendiniz** girersiniz. Uygulama şifreyi görmez, saklamaz.
+3. FA sekmesinde PN / SN / GRB / FA No girip **FA'i Bul**'a basın.
+   İlk seferde tarayıcı ROT FA PN History portalını açar; siz tablonun olduğu sayfayı açarsınız,
+   uygulama sayfayı algılar, **kaydeder** ve otomasyona başlar. Sonraki seferlerde doğrudan gider.
+4. Envanter sekmesi aynı şekilde Teknik Envanter portalını kullanır.
+
+Tarayıcı profili saklandığı için oturum açık kaldıkça şifre tekrar sorulmaz.
+Sayfayı yeniden seçmek için: **Ayarlar > Kayıtlı Qlik sayfalarını unut**.
 Portal olmadan denemek için: **Ayarlar > Örnek veri ile dene**.
 
 Komut satırı da var:
@@ -50,7 +59,7 @@ Excel raporu (`Raporlar/`): **Özet** (renkli), **Döngü Zinciri**, **Alternati
 
 ## Veri kaynağı
 
-- **Canlı Qlik Sense:** Playwright ile giriş yapılır; her sorgu Qlik'in uygulama entegrasyon URL'i
+- **Canlı Qlik Sense:** Giriş kullanıcı tarafından tarayıcıda yapılır; sonra her sorgu Qlik'in uygulama entegrasyon URL'i
   (`/sense/app/<app>/sheet/<sheet>/state/analysis/options/clearselections/select/<alan>/<değer>`) ile seçimli açılır,
   tablo sağ tık > İndir > Veri ile Excel'e alınır. Oturum boyunca aynı sorgu tekrar çekilmez. Şifre sadece bellekte tutulur.
 - **Excel modu:** Qlik'ten elle indirilen hareket export'ları seçilir. Kolon başlıkları (PN, P/N, Part Number, Parça No,
@@ -59,8 +68,8 @@ Excel raporu (`Raporlar/`): **Özet** (renkli), **Döngü Zinciri**, **Alternati
 Gereken hareket kolonları: tarih, hareket tipi, PN, SN (zorunlu); GRB, açıklama, PN grubu, uçak, pozisyon, NHA PN/SN,
 iş emri, yeni PN/SN (ne kadar çok varsa o kadar isabetli).
 
-### Kalibrasyon (ilk kurulumda bir kez)
-Portal sayfa yapısı şirkete özel olduğu için seçiciler ayardan değiştirilebilir. **Ayarlar > Kalibrasyon** giriş yapılmış
+### Kalibrasyon (gerekirse)
+Sağ tık menüsü farklı çıkarsa seçiciler ayardan değiştirilebilir. **Ayarlar > Kalibrasyon** giriş yapılmış
 tarayıcıyı Playwright Inspector ile açar; tablo nesnesinin `tid` değeri ve menü etiketleri buradan bulunup
 `config.yaml > qlik` bölümüne yazılır.
 

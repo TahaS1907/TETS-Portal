@@ -24,12 +24,10 @@ def filter_null_notes(df: pd.DataFrame, notes_col: str) -> pd.DataFrame:
     return df[df[col].map(clean) == ""]
 
 
-def run_envanter(cfg: dict, username: str, password: str, only_null_notes: bool, log=None) -> Path:
-    from .sources.qlik_source import QlikSession
-
+def run_envanter(cfg: dict, session, only_null_notes: bool, log=None) -> Path:
+    """session: acik bir QlikSession (giris yapilmis tarayici)."""
     e = cfg["qlik"]["envanter"]
-    with QlikSession(cfg, username, password, log) as s:
-        df = s.export(e, {e["durum_alani"]: e["durum_degeri"]})
+    df = session.export(e, {e["durum_alani"]: e["durum_degeri"]})
     if only_null_notes:
         df = filter_null_notes(df, e["notes_kolonu"])
     out = Path(cfg["cikti_klasoru"])
@@ -37,5 +35,5 @@ def run_envanter(cfg: dict, username: str, password: str, only_null_notes: bool,
     path = out / f"Envanter_{'NullNotes' if only_null_notes else 'Tamami'}_{datetime.now():%Y%m%d_%H%M}.xlsx"
     df.to_excel(path, index=False)
     if log:
-        log(f"{len(df)} satir kaydedildi: {path}")
+        log(f"» {len(df)} satir kaydedildi: {path.name}")
     return path

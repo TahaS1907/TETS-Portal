@@ -40,6 +40,7 @@ class Worker(threading.Thread):
         self.ui = ui_queue
         self.source = None
         self.source_key = None
+        self.session = None  # acik Qlik tarayici oturumu (tum sekmeler ortak kullanir)
 
     def submit(self, fn, *args):
         self.jobs.put((fn, args))
@@ -63,6 +64,12 @@ class Worker(threading.Thread):
             except Exception:
                 pass
         self.source, self.source_key = None, None
+
+    def reset_session(self):
+        self.reset_source()
+        if self.session is not None:
+            self.session.close()
+        self.session = None
 
 
 class App(tk.Tk):
@@ -116,14 +123,21 @@ class App(tk.Tk):
             except tk.TclError:
                 pass
         ttk.Label(f, text="TETS Portal", style="H.TLabel").pack(side="left")
-        cred = ttk.LabelFrame(f, text="Qlik Sense girisi")
+        cred = ttk.LabelFrame(f, text="Qlik Sense")
         cred.pack(side="right")
         self.user = tk.StringVar()
         self.pw = tk.StringVar()
-        ttk.Label(cred, text="Kullanici").grid(row=0, column=0, padx=4, pady=3)
-        ttk.Entry(cred, textvariable=self.user, width=16).grid(row=0, column=1, padx=4)
-        ttk.Label(cred, text="Sifre").grid(row=0, column=2, padx=4)
-        ttk.Entry(cred, textvariable=self.pw, show="•", width=16).grid(row=0, column=3, padx=4)
+        col = 0
+        if self.cfg["qlik"]["giris"]["mod"] != "manuel":
+            ttk.Label(cred, text="Kullanici").grid(row=0, column=0, padx=4, pady=3)
+            ttk.Entry(cred, textvariable=self.user, width=16).grid(row=0, column=1, padx=4)
+            ttk.Label(cred, text="Sifre").grid(row=0, column=2, padx=4)
+            ttk.Entry(cred, textvariable=self.pw, show="•", width=16).grid(row=0, column=3, padx=4)
+            col = 4
+        self.qlik_state = tk.StringVar(value="kapali")
+        ttk.Button(cred, text="Qlik'i Ac", style="Accent.TButton", command=self._open_qlik).grid(
+            row=0, column=col, padx=4, pady=3)
+        ttk.Label(cred, textvariable=self.qlik_state, foreground="#555").grid(row=0, column=col + 1, padx=4)
 
     def _fa_tab(self, nb):
         tab = ttk.Frame(nb, padding=8)
@@ -183,6 +197,7 @@ class App(tk.Tk):
         for text, cmd in (("config.yaml'i ac", lambda: open_path(ensure_user_config())),
                           ("Ayarlari yeniden yukle", self._reload),
                           ("Rapor klasorunu ac", self._open_out_dir),
+                          ("Kayitli Qlik sayfalarini unut (yeniden sec)", self._forget),
                           ("Kalibrasyon (Qlik'i Inspector ile ac)", self._calibrate),
                           ("Ornek veri ile dene", self._demo)):
             ttk.Button(tab, text=text, command=cmd, width=40).pack(anchor="w", pady=3)
@@ -206,16 +221,47 @@ class App(tk.Tk):
         return {"mode": self.mode.get(), "files": list(self.excel_files),
                 "user": self.user.get().strip(), "pw": self.pw.get()}
 
+    def _ensure_session(self, w: Worker, snap: dict):
+        """Tarayiciyi acar; kullanici sifresini tarayiciya girene kadar bekler. Oturum acik kalir."""
+        from .sources.qlik_source import QlikSession
+        if w.session is None or not w.session.alive:
+            w.reset_session()
+            self.ui_q.put(("qlik", "giris bekleniyor"))
+            s = QlikSession(self.cfg, snap["user"], snap["pw"], self._log)
+            try:
+                s.start()
+            except Exception:
+                s.close()
+                self.ui_q.put(("qlik", "kapali"))
+                raise
+            w.session = s
+            self.ui_q.put(("qlik", "bagli ✓"))
+        return w.session
+
     def _ensure_source(self, w: Worker, snap: dict):
         from .fa.runner import open_source
-        k = (snap["mode"], tuple(snap["files"]), snap["user"])
+        k = (snap["mode"], tuple(snap["files"]))
+        if snap["mode"] == "qlik":
+            from .sources.qlik_source import QlikSource
+            sess = self._ensure_session(w, snap)
+            if not isinstance(w.source, QlikSource) or w.source.s is not sess:
+                w.reset_source()
+                w.source, w.source_key = QlikSource(sess, self.cfg, owns_session=False), k
+            return w.source
         if w.source is None or w.source_key != k:
             w.reset_source()
-            if k[0] == "qlik" and not (snap["user"] or self.cfg["qlik"]["giris"]["mod"] == "manuel"):
-                raise ValueError("Kullanici adi ve sifre girin.")
-            w.source = open_source(self.cfg, k[0], snap["files"], None, snap["user"], snap["pw"], self._log)
+            w.source = open_source(self.cfg, "excel", snap["files"], None, log=self._log)
             w.source_key = k
         return w.source
+
+    def _open_qlik(self):
+        snap = self._snapshot()
+        self._busy("Tarayicida Qlik'e giris yapin...")
+
+        def job(w):
+            self._ensure_session(w, snap)
+            self._log("» Giris tamam. Simdi FA sorgusu yapabilir veya envanter indirebilirsiniz.")
+        self.worker.submit(job)
 
     def _busy(self, text):
         self.status.set(text)
@@ -259,15 +305,12 @@ class App(tk.Tk):
         self.worker.submit(job)
 
     def _run_env(self):
-        if not self.user.get() and self.cfg["qlik"]["giris"]["mod"] != "manuel":
-            messagebox.showwarning("Giris", "Kullanici adi ve sifre girin.")
-            return
         self._busy("Envanter raporu indiriliyor...")
         only_null, snap = self.env_null.get(), self._snapshot()
 
         def job(w):
             from .envanter import run_envanter
-            p = run_envanter(self.cfg, snap["user"], snap["pw"], only_null, self._log)
+            p = run_envanter(self.cfg, self._ensure_session(w, snap), only_null, self._log)
             self.ui_q.put(("file", p))
         self.worker.submit(job)
 
@@ -276,9 +319,7 @@ class App(tk.Tk):
         self._busy("Kalibrasyon: Inspector penceresini kapatinca biter")
 
         def job(w):
-            from .sources.qlik_source import QlikSession
-            with QlikSession(self.cfg, snap["user"], snap["pw"], self._log) as s:
-                s.calibrate(self.cfg["qlik"]["fa_hareket"])
+            self._ensure_session(w, snap).calibrate(self.cfg["qlik"]["fa_hareket"])
         self.worker.submit(job)
 
     def _demo(self):
@@ -295,6 +336,12 @@ class App(tk.Tk):
         messagebox.showinfo("Ornek veri", f"Ornek veri yuklendi. 'FA'i Bul' ile deneyin.\n"
                                           f"Toplu deneme icin liste: {f}")
 
+    def _forget(self):
+        from .config import forget_learned
+        forget_learned()
+        self._reload()
+        messagebox.showinfo("Qlik sayfalari", "Bir sonraki islemde portal sayfasini tarayicida tekrar secmeniz istenecek.")
+
     def _reload(self):
         self.cfg = load_config()
         self.worker.submit(lambda w: w.reset_source())
@@ -310,6 +357,8 @@ class App(tk.Tk):
 
     def _log(self, msg):
         self.ui_q.put(("log", msg))
+        if msg.startswith("»"):  # kullaniciya yonelik onemli adimlar durum cubugunda da gorunur
+            self.ui_q.put(("status", msg.lstrip("» ")))
 
     # ------------------------------------------------------------------ UI kuyrugu
     def _show_result(self, res):
@@ -329,6 +378,8 @@ class App(tk.Tk):
                 if kind == "log":
                     self.logbox.insert("end", data + "\n")
                     self.logbox.see("end")
+                elif kind == "qlik":
+                    self.qlik_state.set(data)
                 elif kind == "status":
                     self.status.set(data)
                 elif kind == "result":
@@ -359,8 +410,8 @@ class App(tk.Tk):
         self.after(100, self._poll)
 
     def _quit(self):
-        self.worker.submit(lambda w: w.reset_source())
-        self.after(300, self.destroy)
+        self.worker.submit(lambda w: w.reset_session())
+        self.after(800, self.destroy)
 
 
 def main():
