@@ -175,10 +175,10 @@ class FAEngine:
         if not key(grb):
             g = hist[(hist.pn_k == ident[0]) & (hist.sn_k == ident[1]) & (hist.grb_k != "")]
             grb = g.grb.iloc[-1] if not g.empty else ""
-        # Son hareketi PN SN CHG (veya takma disi bir hareket) olan parcada yeni PN/SN sadece GRB
-        # aramasinda gorunur: GRB ile de ara ve gecmise ekle (Senaryo 6).
+        # Gecmiste PN SN CHG varsa yeni PN/SN sadece GRB aramasinda gorunur:
+        # GRB ile de ara ve gecmise ekle (Senaryo 6). Diger parcalarda ek sorgu yapilmaz.
         if key(grb) and not grb_given and len(hist):
-            if (hist.tx_type == PNSN_CHG).any() or hist.iloc[-1].tx_type not in INSTALLS:
+            if (hist.tx_type == PNSN_CHG).any():
                 self.log(f"GRB {grb} ile de araniyor (PN/SN degisimi kontrolu)")
                 hist = self._merge(hist, self._history("", "", grb))
         same_grb = (lambda x: x.grb_k == key(grb)) if key(grb) else (lambda x: True)

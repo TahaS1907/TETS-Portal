@@ -244,7 +244,7 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
-    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "menu": "sag tik > Download as > Data > Apply",
+    METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "menu": "sag tik > Download as > Apply",
                "ekran": "filtre + ekrandan okuma", "motor": "motor (WebSocket) baglantisi"}
 
     def export(self, app: dict, selections: dict, must_have: list[str] | None = None) -> pd.DataFrame:
@@ -269,6 +269,12 @@ class QlikSession:
                     df = self.export_screen(app, selections)
                 else:
                     df = self.export_menu(app, selections)
+                # Yanlis nesnenin dosyasi indiyse (orn. sadece 'AC' kolonu) kullanma, siradaki yonteme gec
+                if not df.empty and must_have:
+                    have = {re.sub(r"[^A-Z0-9]", "", str(c).upper()) for c in df.columns}
+                    miss = [c for c in must_have if re.sub(r"[^A-Z0-9]", "", c.upper()) not in have]
+                    if miss:
+                        raise QlikError(f"inen tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
             except Exception as e:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
                 errors.append(f"{self.METHODS[m]}: {msg}")
@@ -335,6 +341,12 @@ class QlikSession:
             try:
                 res = self.page.evaluate(ENGINE_JS, {**args, "mode": mode, "wsUrl": url})
                 break
+                # Yanlis nesnenin dosyasi indiyse (orn. sadece 'AC' kolonu) kullanma, siradaki yonteme gec
+                if not df.empty and must_have:
+                    have = {re.sub(r"[^A-Z0-9]", "", str(c).upper()) for c in df.columns}
+                    miss = [c for c in must_have if re.sub(r"[^A-Z0-9]", "", c.upper()) not in have]
+                    if miss:
+                        raise QlikError(f"inen tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
             except Exception as e:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
                 errors.append(f"{'sayfa baglantisi' if mode == 'client' else url}: {msg}")
