@@ -60,6 +60,7 @@ class QlikSession:
         self.timeout = int(self.cfg["zaman_asimi_sn"]) * 1000
         self.download_dir = Path(tempfile.mkdtemp(prefix="tets_qlik_"))
         self._pw = self.browser = self.context = self.page = None
+        self.ws_urls: list[str] = []  # Qlik sayfasinin kendi actigi motor baglantilari
 
     # ------------------------------------------------------------------ yasam dongusu
     def __enter__(self):
@@ -96,6 +97,7 @@ class QlikSession:
             self.context = self._pw.chromium.launch_persistent_context(str(profile), **opts)
         self.context.set_default_timeout(self.timeout)
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
+        self.page.on("websocket", lambda w: self.ws_urls.append(w.url))
         self.login()
 
     @property
@@ -251,10 +253,25 @@ class QlikSession:
                 self.log(f"Motor ile okunamadi ({e}); menu ile indirme deneniyor")
         return self.export_menu(app, selections)
 
-    def engine_url(self, app_id: str) -> str:
-        base = self.cfg.get("motor_url") or (
-            self._root().replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/app/")
-        return base + quote(app_id, safe="")
+    def engine_urls(self, app_id: str) -> list[str]:
+        """Denenecek motor adresleri: once Qlik sayfasinin kendi kullandigi adres."""
+        out = [u for u in reversed(self.ws_urls) if f"/app/{app_id}" in u or quote(app_id, safe="") in u]
+        if self.cfg.get("motor_url"):
+            out.append(self.cfg["motor_url"] + quote(app_id, safe=""))
+        out.append(self._root().replace("https://", "wss://", 1).replace("http://", "ws://", 1)
+                   + "/app/" + quote(app_id, safe=""))
+        return list(dict.fromkeys(out))
+
+    def _goto_app(self, app: dict):
+        """Sayfa dogru uygulamada degilse uygulamanin tablo sayfasini acar ve Qlik'in yuklenmesini bekler."""
+        page = self.page
+        if f"/app/{app['app_id']}" not in page.url:
+            page.goto(f"{self._root()}/sense/app/{app['app_id']}/sheet/{app['sheet_id']}/state/analysis",
+                      wait_until="domcontentloaded")
+        try:
+            page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=30000)
+        except Exception:
+            pass
 
     def export_engine(self, app: dict, selections: dict, must_have: list[str]) -> pd.DataFrame:
         sel = {}
@@ -262,21 +279,31 @@ class QlikSession:
             vals = [str(x) for x in (v if isinstance(v, (list, tuple)) else [v]) if str(x).strip()]
             if f and vals:
                 sel[f] = vals
-        self.log(f"Qlik sorgusu (motor): {sel}")
-        res = self.page.evaluate(ENGINE_JS, {
-            "wsUrl": self.engine_url(app["app_id"]), "appId": app["app_id"],
-            "objectId": app.get("object_id", ""), "sheetId": app.get("sheet_id", ""),
-            "selections": sel, "mustHave": must_have,
-            "maxRows": int(self.cfg.get("max_satir", 200000)), "timeoutMs": self.timeout,
-        })
+        self.log(f"Qlik sorgusu: {sel}")
+        self._goto_app(app)
+        args = {"appId": app["app_id"], "objectId": app.get("object_id", ""), "sheetId": app.get("sheet_id", ""),
+                "selections": sel, "mustHave": must_have,
+                "maxRows": int(self.cfg.get("max_satir", 200000)), "timeoutMs": self.timeout}
+        attempts = [("client", "")] + [("ws", u) for u in self.engine_urls(app["app_id"])]
+        errors = []
+        for mode, url in attempts:
+            try:
+                res = self.page.evaluate(ENGINE_JS, {**args, "mode": mode, "wsUrl": url})
+                break
+            except Exception as e:
+                msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
+                errors.append(f"{'sayfa baglantisi' if mode == 'client' else url}: {msg}")
+                self.log(f"  okunamadi ({errors[-1]})")
+        else:
+            raise QlikError("Qlik verisi okunamadi -> " + " | ".join(errors))
+        self.log(f"  veri {'sayfanin kendi baglantisiyla' if mode == 'client' else 'motor baglantisiyla'} okundu")
         for line in res.get("log", []):
             self.log("  " + line)
         if res.get("objectId") and res["objectId"] != app.get("object_id"):
             app["object_id"] = res["objectId"]
             if app.get("_bolum"):
                 save_learned(app["_bolum"], {"object_id": res["objectId"]})
-        headers = _unique(res["headers"])
-        return pd.DataFrame(res["rows"], columns=headers, dtype=object)
+        return pd.DataFrame(res["rows"], columns=_unique(res["headers"]), dtype=object)
 
     def export_menu(self, app: dict, selections: dict) -> pd.DataFrame:
         page, ex = self.page, self.cfg["export"]

@@ -1,52 +1,100 @@
-// Qlik Sense Engine API (JSON-RPC over WebSocket) ile tablo verisi okuma.
-// Giris yapilmis tarayici sayfasinin icinde calisir; oturum cerezi otomatik gonderilir.
-// Ekrandaki menulere (Download/Indir) bagimli degildir.
-async ({ wsUrl, appId, objectId, sheetId, selections, mustHave, maxRows, timeoutMs }) => {
+// Qlik Sense tablo verisini menuye dokunmadan okur. Giris yapilmis sayfanin icinde calisir.
+// mode = "client": acik Qlik sayfasinin kendi baglantisi (js/qlik -> enigmaModel) kullanilir.
+// mode = "ws":     verilen WebSocket adresiyle Engine API'ye (JSON-RPC) dogrudan baglanilir.
+async ({ mode, wsUrl, appId, objectId, sheetId, selections, mustHave, maxRows, timeoutMs }) => {
   const log = [];
-  const ws = new WebSocket(wsUrl);
-  let seq = 0;
-  const pending = {};
-  const opened = new Promise((res, rej) => {
-    ws.onopen = res;
-    ws.onerror = () => rej(new Error("Qlik motoruna baglanilamadi: " + wsUrl));
-  });
-  ws.onmessage = (ev) => {
-    const m = JSON.parse(ev.data);
-    if (m.id && pending[m.id]) {
-      const p = pending[m.id];
-      delete pending[m.id];
-      if (m.error) p.rej(new Error(`${m.error.message || "Qlik hatasi"} (${m.error.code}) ${m.error.parameter || ""}`));
-      else p.res(m.result);
-    }
-  };
-  const call = (handle, method, params) =>
-    new Promise((res, rej) => {
-      const id = ++seq;
-      pending[id] = { res, rej };
-      setTimeout(() => { if (pending[id]) { delete pending[id]; rej(new Error(method + " zaman asimi")); } }, timeoutMs);
-      ws.send(JSON.stringify({ jsonrpc: "2.0", id, handle, method, params }));
-    });
   const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const T = (p, what) =>
+    Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " zaman asimi")), timeoutMs))]);
+  let api;
+  let cleanup = () => {};
 
-  await opened;
-  try {
+  if (mode === "client") {
+    if (typeof window.require !== "function") throw new Error("Qlik istemci API'si sayfada yok");
+    const qlik = await T(new Promise((res, rej) => window.require(["js/qlik"], res, rej)), "js/qlik");
+    const app = qlik.currApp();
+    if (!app) throw new Error("Acik Qlik uygulamasi bulunamadi");
+    if (appId && app.id && app.id !== appId) throw new Error(`Sayfada farkli uygulama acik (${app.id})`);
+    const doc = app.model && app.model.enigmaModel;
+    if (!doc) throw new Error("Qlik istemcisinde enigmaModel yok");
+    api = {
+      getObject: async (id) => {
+        const o = await T(doc.getObject(id), "getObject");
+        if (!o) throw new Error("Nesne yok: " + id);
+        return {
+          layout: () => T(o.getLayout(), "getLayout"),
+          data: (pages) => T(o.getHyperCubeData("/qHyperCubeDef", pages), "getHyperCubeData"),
+        };
+      },
+      clearAll: () => T(doc.clearAll(false), "clearAll"),
+      select: async (field, vals) => {
+        const f = await T(doc.getField(field), "getField");
+        if (!f) throw new Error(`Qlik'te '${field}' alani bulunamadi`);
+        return T(f.selectValues(vals, false, false), "selectValues");
+      },
+      allInfos: () => T(doc.getAllInfos(), "getAllInfos"),
+    };
+  } else {
+    const ws = new WebSocket(wsUrl);
+    let seq = 0;
+    const pending = {};
+    await T(new Promise((res, rej) => {
+      ws.onopen = res;
+      ws.onerror = () => rej(new Error("Qlik motoruna baglanilamadi: " + wsUrl));
+    }), "WebSocket");
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.id && pending[m.id]) {
+        const p = pending[m.id];
+        delete pending[m.id];
+        if (m.error) p.rej(new Error(`${m.error.message || "Qlik hatasi"} (${m.error.code}) ${m.error.parameter || ""}`));
+        else p.res(m.result);
+      }
+    };
+    cleanup = () => ws.close();
+    const call = (handle, method, params) =>
+      T(new Promise((res, rej) => {
+        const id = ++seq;
+        pending[id] = { res, rej };
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id, handle, method, params }));
+      }), method);
     let doc;
     try {
       doc = (await call(-1, "OpenDoc", { qDocName: appId })).qReturn.qHandle;
     } catch (e) {
       doc = (await call(-1, "GetActiveDoc", {})).qReturn.qHandle; // uygulama bu oturumda zaten acik
     }
+    api = {
+      getObject: async (id) => {
+        const h = (await call(doc, "GetObject", { qId: id })).qReturn.qHandle;
+        if (!h) throw new Error("Nesne yok: " + id);
+        return {
+          layout: async () => (await call(h, "GetLayout", {})).qLayout,
+          data: async (pages) => (await call(h, "GetHyperCubeData", { qPath: "/qHyperCubeDef", qPages: pages })).qDataPages,
+        };
+      },
+      clearAll: () => call(doc, "ClearAll", { qLockedAlso: false }),
+      select: async (field, vals) => {
+        const fh = (await call(doc, "GetField", { qFieldName: field })).qReturn.qHandle;
+        if (!fh) throw new Error(`Qlik'te '${field}' alani bulunamadi`);
+        return (await call(fh, "SelectValues", { qFieldValues: vals, qToggleMode: false, qSoftLock: false })).qReturn;
+      },
+      allInfos: async () => (await call(doc, "GetAllInfos", {})).qInfos,
+    };
+  }
 
+  try {
     const tableInfo = async (id) => {
-      const h = (await call(doc, "GetObject", { qId: id })).qReturn.qHandle;
-      const lay = (await call(h, "GetLayout", {})).qLayout;
-      if (!lay.qHyperCube) return null;
+      const o = await api.getObject(id);
+      const lay = await o.layout();
+      if (!lay || !lay.qHyperCube) return null;
       const hc = lay.qHyperCube;
       const titles = [...(hc.qDimensionInfo || []), ...(hc.qMeasureInfo || [])].map((d) => d.qFallbackTitle);
-      return { id, h, type: lay.qInfo && lay.qInfo.qType, titles, hc };
+      return { id, o, type: lay.qInfo && lay.qInfo.qType, titles, hc };
     };
 
-    // 1) Tablo nesnesini bul: kayitli id gecerliyse onu, degilse sayfadaki en uygun tabloyu kullan
+    // 1) Tablo nesnesi: kayitli id uygunsa o, degilse sayfadaki en uygun tablo
     let table = null;
     if (objectId) {
       try { table = await tableInfo(objectId); } catch (e) { log.push("Kayitli nesne acilamadi: " + objectId); }
@@ -56,13 +104,13 @@ async ({ wsUrl, appId, objectId, sheetId, selections, mustHave, maxRows, timeout
       let ids = [];
       if (sheetId) {
         try {
-          const sh = (await call(doc, "GetObject", { qId: sheetId })).qReturn.qHandle;
-          const sl = (await call(sh, "GetLayout", {})).qLayout;
+          const sh = await api.getObject(sheetId);
+          const sl = await sh.layout();
           ids = ((sl.qChildList && sl.qChildList.qItems) || []).map((i) => i.qInfo.qId);
         } catch (e) { log.push("Sayfa okunamadi: " + sheetId); }
       }
       if (!ids.length) {
-        const infos = (await call(doc, "GetAllInfos", {})).qInfos || [];
+        const infos = (await api.allInfos()) || [];
         ids = infos.filter((i) => /table/i.test(i.qType)).map((i) => i.qId);
       }
       let best = null;
@@ -80,36 +128,32 @@ async ({ wsUrl, appId, objectId, sheetId, selections, mustHave, maxRows, timeout
 
     // 2) Secimler: kolon basligindan gercek alan adini bul (master item olsa bile)
     const labelToField = {};
-    [...(table.hc.qDimensionInfo || [])].forEach((d) => {
+    (table.hc.qDimensionInfo || []).forEach((d) => {
       const f = (d.qGroupFieldDefs || [])[0];
       if (f && !String(f).startsWith("=")) labelToField[norm(d.qFallbackTitle)] = f;
     });
-    await call(doc, "ClearAll", { qLockedAlso: false });
-    const before = (await call(table.h, "GetLayout", {})).qLayout.qHyperCube.qSize.qcy;
+    await api.clearAll();
+    const before = (await table.o.layout()).qHyperCube.qSize.qcy;
     let anyMiss = false;
     for (const [label, values] of Object.entries(selections)) {
       const field = labelToField[norm(label)] || label;
-      const fh = (await call(doc, "GetField", { qFieldName: field })).qReturn.qHandle;
-      if (!fh) throw new Error(`Qlik'te '${field}' alani bulunamadi`);
-      const qFieldValues = [];
+      const vals = [];
       for (const v of values) {
-        qFieldValues.push({ qText: String(v) });
+        vals.push({ qText: String(v) });
         const n = Number(String(v).replace(",", "."));
-        if (String(v).trim() !== "" && !isNaN(n)) qFieldValues.push({ qText: String(v), qIsNumeric: true, qNumber: n });
+        if (String(v).trim() !== "" && !isNaN(n)) vals.push({ qText: String(v), qIsNumeric: true, qNumber: n });
       }
-      const ok = (await call(fh, "SelectValues", { qFieldValues, qToggleMode: false, qSoftLock: false })).qReturn;
+      const ok = await api.select(field, vals);
       log.push(`Secim ${field} = ${values.join(", ")} -> ${ok ? "ok" : "eslesme yok"}`);
       if (!ok) anyMiss = true;
     }
 
-    // 3) Veri: secimlerden sonraki layout, 10.000 hucrelik sayfalar halinde
-    const lay = (await call(table.h, "GetLayout", {})).qLayout;
-    const hc = lay.qHyperCube;
+    // 3) Veri: secimlerden sonraki tablo, 10.000 hucrelik sayfalar halinde
+    const hc = (await table.o.layout()).qHyperCube;
     const headers = [...(hc.qDimensionInfo || []), ...(hc.qMeasureInfo || [])].map((d) => d.qFallbackTitle);
     if (Object.keys(selections).length && (anyMiss || (before > 0 && hc.qSize.qcy === before))) {
-      // secim tutmadi: tum tabloyu dondurmek yerine bos sonuc
       log.push("Secilen deger tabloda yok -> bos sonuc");
-      await call(doc, "ClearAll", { qLockedAlso: false });
+      await api.clearAll();
       return { headers, rows: [], objectId: table.id, log };
     }
     const width = hc.qSize.qcx;
@@ -118,15 +162,12 @@ async ({ wsUrl, appId, objectId, sheetId, selections, mustHave, maxRows, timeout
     const pageH = Math.max(1, Math.floor(10000 / Math.max(width, 1)));
     const rows = [];
     for (let top = 0; top < total; top += pageH) {
-      const r = await call(table.h, "GetHyperCubeData", {
-        qPath: "/qHyperCubeDef",
-        qPages: [{ qTop: top, qLeft: 0, qWidth: width, qHeight: Math.min(pageH, total - top) }],
-      });
-      for (const row of r.qDataPages[0].qMatrix) rows.push(row.map((c) => (c.qIsNull ? "" : c.qText)));
+      const pages = await table.o.data([{ qTop: top, qLeft: 0, qWidth: width, qHeight: Math.min(pageH, total - top) }]);
+      for (const row of pages[0].qMatrix) rows.push(row.map((c) => (c.qIsNull ? "" : c.qText)));
     }
-    await call(doc, "ClearAll", { qLockedAlso: false });
+    await api.clearAll();
     return { headers, rows, objectId: table.id, log };
   } finally {
-    ws.close();
+    cleanup();
   }
 }
