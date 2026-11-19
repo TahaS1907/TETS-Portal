@@ -74,6 +74,11 @@ def rows():
         R("10.03.2025", "STORE RECEIPT", "5500-2", "P1X", "G900", "VALVE FUEL", "", loc="IST"),
         R("01.04.2025", "AC REMOVE", "5500-2", "P7", "G901", "VALVE FUEL", "", "TC-JAD", "LH WING", wo="W13"),
         R("01.04.2025", "AC INSTALL", "5500-2", "P1X", "G900", "VALVE FUEL", "", "TC-JAD", "LH WING", wo="W13"),
+        # ---------------- S6e: PN SN CHG sonrasi hareket var, en son depoda -> FA'deki PN/SN degismeli
+        R("10.08.2022", "PN SN CHG", "7B26E-X", "Q9", "G950", "ENGINE", "ENG", loc="IST"),
+        R("10.08.2022", "STORE RECEIPT", "7B27E-X", "Q9", "G950", "ENGINE", "ENG", loc="IST"),
+        R("14.12.2025", "AC REMOVE", "7B27E-X", "Q9", "G950", "ENGINE", "ENG", "TC-JZO", "L00", wo="W14"),
+        R("05.11.2026", "STORE RECEIPT", "7B27E-X", "Q9", "G950", "ENGINE", "ENG", loc="IST"),
         # ---------------- FA dogru: parca sokulmus, bir daha takilmamis
         R("11.11.2025", "AC REMOVE", "8800", "K1", "", "COMPUTER FMC", "", "TC-JAA", "E/E BAY", wo="W11"),
     ]

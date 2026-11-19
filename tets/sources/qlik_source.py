@@ -50,6 +50,21 @@ def _unique(headers: list[str]) -> list[str]:
     return out
 
 
+TABLE_KINDS = [".qv-object-sn-table", ".qv-object-table", ".qv-object-pivot-table", ".qv-object-sn-pivot-table",
+               ".qv-object"]
+# Sayfadaki EN BUYUK tabloyu sec (filtre kutulari/KPI'lar secilmesin)
+DETECT_JS = """(sels) => {
+  for (const sel of sels) {
+    const els = [...document.querySelectorAll(sel)].filter(e => e.offsetWidth && e.offsetHeight);
+    if (!els.length) continue;
+    els.sort((a, b) => b.offsetWidth * b.offsetHeight - a.offsetWidth * a.offsetHeight);
+    const t = els[0].closest('[tid]') || els[0].querySelector('[tid]');
+    if (t) return t.getAttribute('tid');
+  }
+  return null;
+}"""
+
+
 class QlikError(RuntimeError):
     pass
 
@@ -175,6 +190,15 @@ class QlikSession:
         self._wait(self._logged_in, "Qlik girisi yapilmadi")
         self.log("» Giris basarili.")
 
+    def detect_table(self) -> str | None:
+        """Acik sayfadaki en buyuk tablonun nesne kimligini bulur."""
+        try:
+            self.page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=20000)
+            self.page.wait_for_timeout(1000)
+            return self.page.evaluate(DETECT_JS, TABLE_KINDS)
+        except Exception:
+            return None
+
     def resolve_sheet(self, app: dict) -> dict:
         """Uygulamanin tablo sayfasi bilinmiyorsa kullanicinin tarayicida acmasini bekler, sonra hatirlar."""
         if app.get("app_id") and app.get("sheet_id"):
@@ -195,9 +219,7 @@ class QlikSession:
         learned = {"app_id": m.group(1), "sheet_id": m.group(2)}
         if not app.get("object_id"):
             try:
-                page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=20000)
-                tid = page.locator(TABLE_SEL).first.evaluate(
-                    "e => { const t = e.closest('[tid]') || e.querySelector('[tid]'); return t ? t.getAttribute('tid') : null }")
+                tid = self.detect_table()
                 if tid:
                     learned["object_id"] = tid
             except Exception:
@@ -258,8 +280,11 @@ class QlikSession:
         if self.good_method in order:
             order.remove(self.good_method)
             order.insert(0, self.good_method)
-        errors = []
-        for m in order:
+        errors, redetected = [], False
+        i = 0
+        while i < len(order):
+            m = order[i]
+            i += 1
             try:
                 if m == "sayfa":
                     df = self.export_engine(app, selections, must_have or [], "client")
@@ -270,10 +295,21 @@ class QlikSession:
                 else:
                     df = self.export_menu(app, selections)
                 # Yanlis nesnenin dosyasi indiyse (orn. sadece 'AC' kolonu) kullanma, siradaki yonteme gec
-                if not df.empty and must_have:
+                if len(df.columns) and must_have:
                     have = {re.sub(r"[^A-Z0-9]", "", str(c).upper()) for c in df.columns}
                     miss = [c for c in must_have if re.sub(r"[^A-Z0-9]", "", c.upper()) not in have]
                     if miss:
+                        if not redetected:
+                            # kayitli nesne yanlis (filtre kutusu vb.): unut, en buyuk tabloyu bul, tekrar dene
+                            redetected = True
+                            tid = self.detect_table()
+                            self.log(f"  inen tabloda {miss} yok; tablo yeniden bulundu: {tid}")
+                            if tid and tid != app.get("object_id"):
+                                app["object_id"] = tid
+                                if app.get("_bolum"):
+                                    save_learned(app["_bolum"], {"object_id": tid})
+                                i -= 1
+                                continue
                         raise QlikError(f"inen tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
             except Exception as e:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
@@ -293,6 +329,7 @@ class QlikSession:
         self.log(f"Qlik filtresi: {sel}")
         page.goto(self.sheet_url(app, sel), wait_until="domcontentloaded")
         oid = app.get("object_id", "")
+        oid = oid or self.detect_table() or ""
         target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
         target.wait_for(state="visible", timeout=self.timeout)
         page.wait_for_timeout(2000)  # filtrelerin uygulanip tablonun yenilenmesi
@@ -341,12 +378,6 @@ class QlikSession:
             try:
                 res = self.page.evaluate(ENGINE_JS, {**args, "mode": mode, "wsUrl": url})
                 break
-                # Yanlis nesnenin dosyasi indiyse (orn. sadece 'AC' kolonu) kullanma, siradaki yonteme gec
-                if not df.empty and must_have:
-                    have = {re.sub(r"[^A-Z0-9]", "", str(c).upper()) for c in df.columns}
-                    miss = [c for c in must_have if re.sub(r"[^A-Z0-9]", "", c.upper()) not in have]
-                    if miss:
-                        raise QlikError(f"inen tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
             except Exception as e:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
                 errors.append(f"{'sayfa baglantisi' if mode == 'client' else url}: {msg}")
@@ -368,6 +399,7 @@ class QlikSession:
         self.log(f"Qlik sorgusu: {selections}")
         page.goto(url, wait_until="domcontentloaded")
         oid = app.get("object_id", "")
+        oid = oid or self.detect_table() or ""
         target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
         target.wait_for(state="visible", timeout=self.timeout)
         page.wait_for_timeout(1500)  # secimlerin uygulanmasi icin

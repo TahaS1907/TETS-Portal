@@ -169,3 +169,9 @@ def test_ayni_grb_paralel_parca_degisim_sayilmaz():
     eng = FAEngine(FrameSource(normalize_frame(pd.DataFrame(rows, columns=COLS))), load_config())
     r = eng.trace("A-1", "S1")
     assert not r.changes and r.status == "FA_DOGRU"
+
+
+def test_s6_degisim_sonrasi_depoda_fa_pnsn_degismeli(engine):
+    r = engine.trace("7B26E-X", "Q9")
+    assert r.status == "PNSN_CHG" and r.final["pn"] == "7B27E-X"
+    assert "değiştirilmeli" in r.text() and "depoya girmiş" in r.text()

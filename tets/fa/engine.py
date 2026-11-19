@@ -420,7 +420,13 @@ class FAEngine:
             res.final = base
             res.last_move = ev(moves.iloc[-1]) if not moves.empty else None
             res.end_state, res.end_event = state, last
-            if state == "DEPODA":
+            if changes:
+                # Parca PN/SN degisimi gecirmis ve takili degil: FA'deki PN/SN yenisiyle degismeli
+                res.status = "PNSN_CHG"
+                res.final = {**base, "pn": current["pn"], "sn": current["sn"], "grb": current["grb"]}
+                res.message = (f"PN/SN degisimi gecirilmis; FA'deki PN/SN {changes[-1]['new']} olarak "
+                               f"degismeli. Parcanin son durumu: {state}.")
+            elif state == "DEPODA":
                 res.status, res.message = "DEPODA", "FA'deki parcanin kendisi depoya girmis."
             else:
                 res.status = "FA_DOGRU"
@@ -564,7 +570,7 @@ def headline(r: "FAResult") -> str:
     return {
         "FA_ATA": f"FA, {_p(f)} parçasına atanmalı.",
         "FA_SIL": "FA silinmeli.",
-        "PNSN_CHG": f"FA'deki PN/SN, {_p(f)} olarak güncellenmeli.",
+        "PNSN_CHG": f"PN/SN değişimi geçirilmiş. FA'deki PN/SN, {_p(f)} olarak değiştirilmeli.",
         "DEPODA": f"{_p(f)} depoda. FA kapatılabilir, atanacak parça yok.",
         "FA_DOGRU": "FA doğru parçada, değişiklik gerekmez.",
         "BULUNAMADI": "Bu parçaya ait hareket bulunamadı.",
@@ -610,10 +616,19 @@ def explain(r: "FAResult") -> str:
         add(f"{_d(c['date'])} tarihinde PN/SN değişimi yapılmış: {c['old']}  →  {c['new']}",
             "(GRB aynı kaldığı için bu değişim GRB üzerinden yakalandı.)" if "GRB" in c.get("how", "") else "")
 
-    if r.status == "PNSN_CHG":
+    if r.status == "PNSN_CHG" and r.last_move is None:
         add("Değişimden sonra parçanın hiçbir takma / sökme hareketi yok.",
             "→ Parça yerde sadece PN/SN değiştirmiş; sistem FA'i eski PN/SN'de bırakmış.",
-            f"→ FA'e yeni PN/SN gelmeli: {_p(f)}.")
+            f"→ FA'deki PN/SN değiştirilmeli: {_p(f)}.")
+    elif r.status == "PNSN_CHG":
+        lm = r.last_move
+        verb = "takılmış" if lm["tx_type"] in INSTALLS else "sökülmüş"
+        add(f"Parçanın son takma/sökme hareketi: {_d(lm['date'])} tarihinde {_place(lm, verb == 'takılmış')} {verb}.")
+        state = _STATE_TR.get(r.end_state, r.end_state.lower()).replace("sökümden sonra ", "")
+        when = f" ({_d(r.end_event['date'])})" if r.end_event and r.end_state != "ACIKTA" else ""
+        add(f"Sonrasında parça {state}{when}.",
+            "→ Parça PN/SN değişimi geçirmiş; FA eski PN/SN'de kalmış.",
+            f"→ FA'deki PN/SN değiştirilmeli: {_p(f)}.")
     elif not r.steps:
         lm = r.last_move
         if lm:

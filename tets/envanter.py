@@ -27,7 +27,8 @@ def filter_null_notes(df: pd.DataFrame, notes_col: str) -> pd.DataFrame:
 def run_envanter(cfg: dict, session, only_null_notes: bool, log=None) -> Path:
     """session: acik bir QlikSession (giris yapilmis tarayici)."""
     e = cfg["qlik"]["envanter"]
-    df = session.export(e, {e["durum_alani"]: e["durum_degeri"]})
+    # Notes kolonu olmayan bir dosya inerse (yanlis nesne) sistem tabloyu yeniden bulup tekrar dener
+    df = session.export(e, {e["durum_alani"]: e["durum_degeri"]}, [e["notes_kolonu"]] if only_null_notes else None)
     if only_null_notes:
         df = filter_null_notes(df, e["notes_kolonu"])
     out = Path(cfg["cikti_klasoru"])
