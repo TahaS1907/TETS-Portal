@@ -365,7 +365,7 @@ class App(tk.Tk):
         self.out.delete("1.0", "end")
         for line in res.text().split("\n"):
             tag = ()
-            if line.startswith("SONUC"):
+            if line.startswith("SONUÇ"):
                 tag = (res.status,)
             elif line.startswith(" !"):
                 tag = ("WARN",)

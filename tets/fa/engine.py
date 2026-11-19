@@ -30,23 +30,23 @@ from ..normalize import (AC_INSTALL, AC_REMOVE, INSTALLS, NHA_INSTALL, NHA_REMOV
 from ..sources.base import DataSource
 
 STATUS_TEXT = {
-    "FA_ATA": "FA bu parcaya atanmali",
-    "FA_SIL": "FA silinmeli (yerine sokulen parca yok)",
-    "PNSN_CHG": "PN/SN degisimi - FA'e yeni PN/SN gelmeli",
-    "DEPODA": "Dongunun sonundaki parca depoda - FA kapatilabilir",
-    "FA_DOGRU": "FA dogru parcada (parca takili degil, depoda degil)",
-    "BULUNAMADI": "Parcaya ait hareket bulunamadi",
-    "LIMIT": "Dongu limiti asildi - manuel kontrol gerekli",
+    "FA_ATA": "FA bu parçaya atanmalı",
+    "FA_SIL": "FA silinmeli (yerine sökülen parça yok)",
+    "PNSN_CHG": "PN/SN değişimi - FA'e yeni PN/SN gelmeli",
+    "DEPODA": "Döngünün sonundaki parça depoda - FA kapatılabilir",
+    "FA_DOGRU": "FA doğru parçada",
+    "BULUNAMADI": "Parçaya ait hareket bulunamadı",
+    "LIMIT": "Döngü limiti aşıldı - manuel kontrol gerekli",
     "HATA": "Hata",
 }
 
 SCENARIO_TEXT = {
-    1: "S1 Dongu takibi",
-    2: "S2 PN grubu / aciklama (mod) eslesmesi",
-    3: "S3 Motor (taraf/pozisyon kesin)",
-    4: "S4 Coklu ayni PN - pozisyon eslestirme",
-    5: "S5 NHA (ust assy) hareketi",
-    6: "S6 PN/SN degisimi (GRB takibi)",
+    1: "S1 Döngü takibi",
+    2: "S2 PN grubu / açıklama (mod) eşleşmesi",
+    3: "S3 Motor (taraf / pozisyon kesin)",
+    4: "S4 Aynı PN'den çoklu - pozisyon eşleştirme",
+    5: "S5 NHA (üst assy) hareketi",
+    6: "S6 PN/SN değişimi (GRB takibi)",
 }
 
 _EV_FIELDS = ["date", "tx_type", "tx_raw", "pn", "sn", "grb", "description", "pn_group", "aircraft",
@@ -102,6 +102,10 @@ class Step:
     scenarios: set[int] = field(default_factory=set)
     alternatives: list[Candidate] = field(default_factory=list)
     note: str = ""
+    next_install: dict | None = None   # sokulen parca sonra nereye takildi (dongu devam)
+    end_state: str = ""                # dongu bu adimda bittiyse sokulen parcanin son durumu
+    end_event: dict | None = None
+    changes: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -115,46 +119,16 @@ class FAResult:
     scenarios: set[int] = field(default_factory=set)
     confidence: float = 0.0
     changes: list[dict] = field(default_factory=list)
+    last_move: dict | None = None      # zincir yoksa: parcanin son takma/sokme hareketi
+    end_state: str = ""
+    end_event: dict | None = None
 
     @property
     def status_text(self) -> str:
         return STATUS_TEXT.get(self.status, self.status)
 
     def text(self) -> str:
-        q = self.query
-        L = [f"FA {q.get('fa_no') or '-'} | Sorgu: PN {q.get('pn') or '-'} / SN {q.get('sn') or '-'}"
-             f" / GRB {q.get('grb') or '-'}", ""]
-        L.append(f"SONUC : {self.status_text}")
-        if self.final:
-            L.append(f"PARCA : {part_label(self.final)}  ({self.final.get('description', '')})")
-        if self.message:
-            L.append(f"DETAY : {self.message}")
-        if self.status == "HATA":
-            L.append("NE YAPMALI: Bu bir veri alma hatasidir, FA sonucu degildir. Altta kayit kutusundaki "
-                     "satirlarin ekran goruntusunu iletin; bu arada tabloyu Qlik'ten Excel'e indirip "
-                     "'Excel export dosyalari' moduyla ayni sorguyu calistirabilirsiniz.")
-        L.append(f"GUVEN : %{self.confidence:.0f}")
-        if self.scenarios:
-            L.append("SENARYO: " + ", ".join(SCENARIO_TEXT[s] for s in sorted(self.scenarios)))
-        for c in self.changes:
-            L.append(f"PN/SN CHG {c['date']:%d.%m.%Y}: {c['old']} -> {c['new']}")
-        if self.steps:
-            L += ["", "DONGU ZINCIRI:"]
-        for s in self.steps:
-            i = s.installed
-            L.append(f" {s.no}. {i['date']:%d.%m.%Y} TAKILDI  {part_label(i)} -> {where(i)}"
-                     + (f"  WO {i['wo']}" if i.get("wo") else ""))
-            if s.removed:
-                r = s.removed
-                L.append(f"    yerine SOKULDU {part_label(r)} {where(r)} {r['date']:%d.%m.%Y}"
-                         f"  (skor {s.score:.0f}: {'; '.join(s.reasons)})")
-            if s.note:
-                L.append(f"    -> {s.note}")
-            for a in s.alternatives[:3]:
-                L.append(f"       alternatif: {part_label(a.event)} {where(a.event)} skor {a.score:.0f}")
-        if self.warnings:
-            L += ["", "UYARILAR:"] + [f" ! {w}" for w in self.warnings]
-        return "\n".join(L)
+        return explain(self)
 
 
 class FAEngine:
@@ -238,18 +212,18 @@ class FAEngine:
         # 1) kimlik: PN / motor PN koku / PN grubu / dash farki / aciklama
         if i["pn_k"] == r["pn_k"]:
             id_pts = 35
-            reasons.append("ayni PN")
+            reasons.append("aynı PN")
         elif engine and (pn_base(i["pn"]) == pn_base(r["pn"]) or pn_prefix_ratio(i["pn"], r["pn"]) >= 0.6):
             id_pts = 28
-            reasons.append("motor PN koku ayni")
+            reasons.append("motor PN kökü aynı")
             flags.add(3)
         elif i.get("pn_group") and key(i["pn_group"]) == key(r.get("pn_group", "")):
             id_pts = 28
-            reasons.append(f"ayni PN grubu ({i['pn_group']})")
+            reasons.append(f"aynı PN grubu ({i['pn_group']})")
             flags.add(2)
         elif pn_base(i["pn"]) == pn_base(r["pn"]):
             id_pts = 24
-            reasons.append("PN koku ayni (dash farki)")
+            reasons.append("PN kökü aynı (dash farkı)")
         else:
             id_pts = 0
         desc = text_similarity(i.get("description", ""), r.get("description", ""))
@@ -257,19 +231,19 @@ class FAEngine:
             if desc < self.c["aciklama_esik"]:
                 return None
             flags.add(2)
-            reasons.append(f"sadece aciklama benzerligi %{desc * 100:.0f} (mod?)")
+            reasons.append(f"PN farklı ama açıklama %{desc * 100:.0f} benzer (mod olabilir)")
         desc_pts = 20 * desc if (i.get("description") and r.get("description")) else 10
-        if id_pts and desc >= 0.5 and "aciklama" not in " ".join(reasons):
-            reasons.append(f"aciklama %{desc * 100:.0f}")
+        if id_pts and desc >= 0.5 and "açıklama" not in " ".join(reasons):
+            reasons.append(f"açıklama %{desc * 100:.0f} benzer")
         # 2) zaman / is emri
         t_pts = 0.0
         if i["wo_k"] and i["wo_k"] == r["wo_k"]:
             t_pts += 20
-            reasons.append("ayni is emri")
+            reasons.append("aynı iş emri")
         days = abs((r["date"] - i["date"]).total_seconds()) / 86400
         t_pts += 12 if days < 1 else max(0.0, 12 * (1 - days / (win_days + 1)))
         if days >= 1:
-            reasons.append(f"{days:.0f} gun fark")
+            reasons.append(f"{days:.0f} gün fark")
         if r["date"] > i["date"] + pd.Timedelta(days=1):
             t_pts -= 3  # sokum takimdan sonra kaydedilmis
         # 3) pozisyon
@@ -280,10 +254,10 @@ class FAEngine:
         if i.get("position") and r.get("position"):
             if side_conf:
                 pos_pts -= 25
-                reasons.append("taraf uyusmuyor!")
+                reasons.append("taraf uyuşmuyor!")
             elif num_conf:
                 pos_pts -= 10
-                reasons.append("pozisyon no farkli")
+                reasons.append("pozisyon no farklı")
             elif sim >= 0.7:
                 reasons.append(f"pozisyon uyumlu ({r['position']})")
         total = id_pts + desc_pts + t_pts + pos_pts
@@ -344,7 +318,7 @@ class FAEngine:
         if best is None and mine and mine[0].score >= self.c["min_skor"]:
             note = "Uygun sokulen parcalar ayni is/gun icindeki diger takilan parcalarla eslesti"
         if best is not None and rivals:
-            best.reasons.append(f"{len(rivals) + 1} takilan arasindan pozisyona gore secildi")
+            best.reasons.append(f"aynı işte {len(rivals) + 1} parça takılmış, pozisyona göre eşleştirildi")
         return best, mine, flags, note
 
     # ------------------------------------------------------------------ durum
@@ -422,6 +396,8 @@ class FAEngine:
                 state, last = self.state_after(hist, ev(moves.iloc[-1]))
             base = ev(moves.iloc[-1]) if not moves.empty else ev(hist.iloc[-1])
             res.final = base
+            res.last_move = ev(moves.iloc[-1]) if not moves.empty else None
+            res.end_state, res.end_event = state, last
             if state == "DEPODA":
                 res.status, res.message = "DEPODA", "FA'deki parcanin kendisi depoya girmis."
             else:
@@ -498,7 +474,9 @@ class FAEngine:
                 state, nxt = self.state_after(r_hist, r)
             else:
                 state, nxt, after = "ACIKTA", None, []
+            step.changes = after
             if state == "TAKILI" and nxt is not None:
+                step.next_install = nxt
                 step.note = f"Sokulen parca {nxt['date']:%d.%m.%Y} tarihinde {where(nxt)} tekrar takilmis -> dongu devam"
                 inst = nxt
                 continue
@@ -507,6 +485,7 @@ class FAEngine:
                 final.update({"pn": after[-1]["new_pn"], "sn": after[-1]["new_sn"]})
                 step.note = f"Sokulen parca sonradan PN/SN degistirmis: {after[-1]['old']} -> {after[-1]['new']}"
             res.final = final
+            step.end_state, step.end_event = state, nxt
             res.confidence = min(scores)
             if state == "DEPODA":
                 res.status = "DEPODA"
@@ -523,3 +502,150 @@ class FAEngine:
         res.status, res.message = "LIMIT", f"{limit} adimda dongu bitmedi."
         res.confidence = min(scores) if scores else 0
         return res
+
+
+# ---------------------------------------------------------------------- anlatim
+_STATE_TR = {
+    "ACIKTA": "sökümden sonra hiçbir yere takılmamış, depoya da girmemiş",
+    "DEPODA": "depoya girmiş",
+    "DEPODAN_CIKTI": "depodan çıkış yapılmış ama hiçbir yere takılmamış",
+    "SEVK": "tamire / sevke gönderilmiş",
+    "HURDA": "hurdaya ayrılmış",
+}
+
+
+def _d(x) -> str:
+    try:
+        return f"{x:%d.%m.%Y}"
+    except Exception:
+        return "?"
+
+
+def _p(e: dict | None) -> str:
+    if not e:
+        return "-"
+    return f"PN {e.get('pn', '')} / SN {e.get('sn', '')}"
+
+
+def _place(e: dict, install: bool) -> str:
+    if e.get("tx_type") in (NHA_INSTALL, NHA_REMOVE):
+        s = f"üst assy {e.get('nha_pn', '')} / SN {e.get('nha_sn', '')} " + ("içine" if install else "içinden")
+    else:
+        s = f"{e.get('aircraft') or '?'} uçağın" + ("a" if install else "dan")
+    if e.get("position"):
+        s += f" ({e['position']} pozisyonu)"
+    return s
+
+
+def headline(r: "FAResult") -> str:
+    f = r.final or {}
+    return {
+        "FA_ATA": f"FA, {_p(f)} parçasına atanmalı.",
+        "FA_SIL": "FA silinmeli.",
+        "PNSN_CHG": f"FA'deki PN/SN, {_p(f)} olarak güncellenmeli.",
+        "DEPODA": f"{_p(f)} depoda. FA kapatılabilir, atanacak parça yok.",
+        "FA_DOGRU": "FA doğru parçada, değişiklik gerekmez.",
+        "BULUNAMADI": "Bu parçaya ait hareket bulunamadı.",
+        "LIMIT": "Döngü çok uzun sürdü, manuel kontrol gerekli.",
+    }.get(r.status, "Veri alınamadı (bu bir FA sonucu değildir).")
+
+
+def explain(r: "FAResult") -> str:
+    """Sonucu ana ekranda okunacak sekilde adim adim Turkce anlatir."""
+    q, f = r.query, r.final or {}
+    who = " / ".join(x for x in (f"PN {q['pn']}" if q.get("pn") else "", f"SN {q['sn']}" if q.get("sn") else "",
+                                 f"GRB {q['grb']}" if q.get("grb") else "") if x) or "-"
+    bar = "═" * 72
+    L = [bar, f"FA {q.get('fa_no') or '-'}   |   Sorgulanan: {who}", bar, "", f"SONUÇ: {headline(r)}"]
+    if f and r.status in ("FA_ATA", "PNSN_CHG", "DEPODA"):
+        extra = " / ".join(x for x in (f"GRB {f['grb']}" if f.get("grb") else "", f.get("description", "")) if x)
+        if extra:
+            L.append(f"       {extra}")
+    if r.status not in ("HATA", "BULUNAMADI"):
+        L.append(f"       Güven: %{r.confidence:.0f}")
+    L += ["", "NASIL BULUNDU:"]
+    n = 0
+
+    def add(text, *subs):
+        nonlocal n
+        n += 1
+        L.append(f" {n}) {text}")
+        L.extend(f"    {x}" for x in subs if x)
+
+    if r.status == "HATA":
+        add(f"Hata: {r.message}",
+            "Bu bir veri alma hatasıdır. Alttaki kayıt kutusunun ekran görüntüsünü iletin.",
+            "Bu arada tabloyu Qlik'ten Excel'e indirip 'Excel export dosyaları' moduyla deneyebilirsiniz.")
+        return "\n".join(L)
+    if r.status == "BULUNAMADI":
+        add(f"Qlik tablosunda {who} ile hiç hareket bulunamadı.",
+            "PN / SN yazımını kontrol edin (boşluk, tire, baştaki sıfırlar).")
+        return "\n".join(L)
+
+    add(f"{who} için parçanın hareket geçmişine bakıldı.")
+    pre = [c for c in r.changes if not any(c in s.changes for s in r.steps)]
+    for c in pre:
+        add(f"{_d(c['date'])} tarihinde PN/SN değişimi yapılmış: {c['old']}  →  {c['new']}",
+            "(GRB aynı kaldığı için bu değişim GRB üzerinden yakalandı.)" if "GRB" in c.get("how", "") else "")
+
+    if r.status == "PNSN_CHG":
+        add("Değişimden sonra parçanın hiçbir takma / sökme hareketi yok.",
+            "→ Parça yerde sadece PN/SN değiştirmiş; sistem FA'i eski PN/SN'de bırakmış.",
+            f"→ FA'e yeni PN/SN gelmeli: {_p(f)}.")
+    elif not r.steps:
+        lm = r.last_move
+        if lm:
+            verb = "takılmış" if lm["tx_type"] in INSTALLS else "sökülmüş"
+            add(f"Parçanın son takma/sökme hareketi: {_d(lm['date'])} tarihinde {_place(lm, verb == 'takılmış')} {verb}.")
+        state = _STATE_TR.get(r.end_state, r.end_state.lower())
+        if r.status == "DEPODA":
+            add(f"Sonrasında parça {state}" + (f" ({_d(r.end_event['date'])})." if r.end_event else "."),
+                "→ Parça depoda olduğu için FA'de olmamalı; FA kapatılabilir.")
+        else:
+            add(f"Bu sökümden sonra parça {state.replace('sökümden sonra ', '')}.",
+                "→ Parça gerçekten açıkta; FA zaten doğru parçada.")
+
+    for s in r.steps:
+        i, m = s.installed, s.removed
+        wo = f" İş emri: {i['wo']}." if i.get("wo") else ""
+        if s.no == 1:
+            add(f"{_p(i)}, {_d(i['date'])} tarihinde {_place(i, True)} takılmış.{wo}")
+        if m is None:
+            L.append(f"    → Yakın tarihlerde aynı yerden sökülen bir parça bulunamadı")
+            L.append(f"      (aynı PN, PN grubu ve açıklama benzerliği ile arandı).")
+            if i.get("pn", "").startswith("EO"):
+                L.append("      EO'lu kalem: mod kapsamında ek parça olarak takılmış olabilir.")
+            L.append("    → Takılan parçanın karşılığı yok, bu yüzden FA silinmeli.")
+            if s.alternatives:
+                L.append("      Eşiğin altında kalan olası adaylar (kontrol için):")
+                L.extend(f"        • {_p(a.event)} - {_place(a.event, False)}, {_d(a.event['date'])} "
+                         f"(skor {a.score:.0f})" for a in s.alternatives[:3])
+            continue
+        L.append(f"    → Yerine {_p(m)} sökülmüş: {_d(m['date'])}, {_place(m, False)}.")
+        L.append(f"      Neden bu parça: {', '.join(s.reasons)}  (skor {s.score:.0f}/100)")
+        if s.alternatives:
+            L.append("      Diğer adaylar: " + "; ".join(f"{_p(a.event)} (skor {a.score:.0f})" for a in s.alternatives[:2]))
+        for c in s.changes:
+            L.append(f"    → Bu parça {_d(c['date'])} tarihinde PN/SN değiştirmiş: {c['old']}  →  {c['new']}")
+        L.append(f"    → {_p(m)} parçasına geçildi.")
+        if s.next_install:
+            nx = s.next_install
+            add(f"{_p(m)}, {_d(nx['date'])} tarihinde {_place(nx, True)} tekrar takılmış. Döngü devam ediyor."
+                + (f" İş emri: {nx['wo']}." if nx.get("wo") else ""))
+        else:
+            state = _STATE_TR.get(s.end_state, s.end_state.lower())
+            last = f" ({_d(s.end_event['date'])})" if s.end_event and s.end_state != "ACIKTA" else ""
+            if r.status == "DEPODA":
+                add(f"{_p(r.final)} sökümden sonra {state}{last}.",
+                    "→ Döngü burada bitti. Son parça depoda olduğu için FA'e gerek yok, kapatılabilir.")
+            else:
+                add(f"{_p(r.final)} {state}{last}.",
+                    f"→ Döngü burada bitti. FA bu parçaya atanmalı: {_p(r.final)}.")
+    if r.status == "LIMIT":
+        add(r.message, "→ Zinciri Excel raporundaki 'Döngü Zinciri' sayfasından kontrol edin.")
+
+    if r.scenarios:
+        L += ["", "Uygulanan senaryolar: " + ", ".join(SCENARIO_TEXT[x] for x in sorted(r.scenarios))]
+    if r.warnings:
+        L += ["", "DİKKAT:"] + [f" ! {w}" for w in r.warnings]
+    return "\n".join(L)
