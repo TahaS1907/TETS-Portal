@@ -1,0 +1,67 @@
+# TETS Portal ayarlari
+# KURULUM.bat bu dosyayi config.yaml olarak kopyalar. Degisiklikleri config.yaml'a yapin.
+# Burada yazmayan her ayar icin tets/config.py icindeki varsayilan kullanilir.
+
+cikti_klasoru: Raporlar
+
+# ---------------------------------------------------------------- FA motoru
+fa:
+  pencere_gun: 3          # takilan ile sokulen arasinda en fazla kac gun olabilir
+  motor_pencere_gun: 10   # motor degisimlerinde
+  max_adim: 15            # dongu en fazla kac adim takip edilir
+  motor_max_adim: 40
+  min_skor: 45            # 0-100; bunun altindaki eslesmeler kabul edilmez
+  belirsizlik_farki: 6    # ilk iki aday bu kadar yakinsa "belirsiz" uyarisi
+  aciklama_esik: 0.55     # PN / PN grubu tutmuyorsa aciklama benzerligi en az bu olmali
+
+# ---------------------------------------------------------------- Kolon eslestirme
+# Export basliklari otomatik taninir (PN, P/N, Part Number, Parca No, Tarih ...).
+# Taninmayan bir kolon olursa burada esleyin:  standart_ad: "Excel'deki baslik"
+# Standart adlar: date, tx_type, pn, sn, grb, description, pn_group, aircraft, position,
+#                 nha_pn, nha_sn, wo, location, new_pn, new_sn, fa_no
+kolonlar: {}
+#  pn_group: "Interchangeability Group"
+#  tx_type: "Transaction Code"
+
+# ---------------------------------------------------------------- Qlik Sense
+qlik:
+  base_url: ""             # orn: https://qliksense.sirket.com.tr
+  sanal_proxy: ""          # adreste /sense oncesi bir on ek varsa (orn: "thy")
+  tarayici: msedge         # msedge | chrome | chromium
+  gorunmez: false          # true: tarayici penceresi acilmaz
+  zaman_asimi_sn: 90
+  giris:
+    mod: form              # form: kullanici/sifre formu | windows: NTLM penceresi | manuel: siz girersiniz
+    basarili_url_icerir: "/hub"
+
+  # FA hareket raporu: tum takma/sokme/PN SN CHG hareketlerini gosteren tablo.
+  # app_id / sheet_id: Qlik'te sayfayi acinca adres cubugundaki /app/<APP_ID>/sheet/<SHEET_ID>/
+  # object_id: tabloya sag tik > "Paylas/Embed" veya kalibrasyon ile bulunur.
+  fa_hareket:
+    app_id: ""
+    sheet_id: ""
+    object_id: ""
+    alanlar:               # Qlik'teki alan (field) adlari - secim yapmak icin
+      pn: "PN"
+      sn: "SN"
+      grb: "GRB"
+      aircraft: "A/C"
+      nha_pn: "NHA PN"
+      nha_sn: "NHA SN"
+
+  # (Opsiyonel) FA listesi: sadece FA No girilince PN/SN bulmak icin
+  fa_listesi:
+    app_id: ""
+    sheet_id: ""
+    object_id: ""
+    alanlar:
+      fa_no: "FA No"
+
+  # Teknik Envanter Takibi > Null Veri Duzenleme Raporu
+  envanter:
+    app_id: ""
+    sheet_id: ""
+    object_id: ""
+    durum_alani: "Durum"   # true/false secilen alan
+    durum_degeri: "false"
+    notes_kolonu: "Notes"
