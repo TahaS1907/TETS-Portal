@@ -33,6 +33,21 @@ SHEET_RE = re.compile(r"/sense/app/([^/?#]+)/sheet/([^/?#]+)")
 TABLE_SEL = ".qv-object-table, .qv-object-sn-table, .qv-object-pivot-table, .qv-object-sn-pivot-table, .qv-object"
 
 
+MORE_SEL = ("button[aria-label*='More' i], button[title*='More' i], button[aria-label*='Daha' i], "
+            "button[title*='Daha' i], [data-testid*='more' i], [tid='nav-menu-more'], button[aria-haspopup='menu']")
+ENGINE_JS = "\n".join(line for line in (Path(__file__).with_name("qlik_engine.js")).read_text(encoding="utf-8")
+                      .splitlines() if not line.startswith("//")).strip()
+
+
+def _unique(headers: list[str]) -> list[str]:
+    seen, out = {}, []
+    for h in headers:
+        n = seen.get(h, 0)
+        out.append(h if n == 0 else f"{h}_{n}")
+        seen[h] = n + 1
+    return out
+
+
 class QlikError(RuntimeError):
     pass
 
@@ -208,9 +223,10 @@ class QlikSession:
         end = time.time() + timeout / 1000
         while time.time() < end:
             for t in labels:
-                for loc in (page.get_by_role("menuitem", name=t, exact=True),
-                            page.get_by_role("button", name=t, exact=True),
-                            page.get_by_text(t, exact=True)):
+                rx = re.compile(rf"^\s*{re.escape(t)}\s*(\.\.\.|…|>|›)?\s*$", re.I)
+                for loc in (page.get_by_role("menuitem", name=rx),
+                            page.get_by_role("button", name=rx),
+                            page.get_by_text(rx)):
                     try:
                         if loc.count() and loc.first.is_visible():
                             loc.first.click()
@@ -222,8 +238,47 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
-    def export(self, app: dict, selections: dict) -> pd.DataFrame:
+    def export(self, app: dict, selections: dict, must_have: list[str] | None = None) -> pd.DataFrame:
+        """Tablo verisini alir. Once Qlik motorundan (Engine API) dogrudan, olmazsa menuden indirerek."""
         self.resolve_sheet(app)
+        method = self.cfg.get("export_yontemi", "otomatik")
+        if method in ("otomatik", "motor"):
+            try:
+                return self.export_engine(app, selections, must_have or [])
+            except Exception as e:
+                if method == "motor":
+                    raise
+                self.log(f"Motor ile okunamadi ({e}); menu ile indirme deneniyor")
+        return self.export_menu(app, selections)
+
+    def engine_url(self, app_id: str) -> str:
+        base = self.cfg.get("motor_url") or (
+            self._root().replace("https://", "wss://", 1).replace("http://", "ws://", 1) + "/app/")
+        return base + quote(app_id, safe="")
+
+    def export_engine(self, app: dict, selections: dict, must_have: list[str]) -> pd.DataFrame:
+        sel = {}
+        for f, v in selections.items():
+            vals = [str(x) for x in (v if isinstance(v, (list, tuple)) else [v]) if str(x).strip()]
+            if f and vals:
+                sel[f] = vals
+        self.log(f"Qlik sorgusu (motor): {sel}")
+        res = self.page.evaluate(ENGINE_JS, {
+            "wsUrl": self.engine_url(app["app_id"]), "appId": app["app_id"],
+            "objectId": app.get("object_id", ""), "sheetId": app.get("sheet_id", ""),
+            "selections": sel, "mustHave": must_have,
+            "maxRows": int(self.cfg.get("max_satir", 200000)), "timeoutMs": self.timeout,
+        })
+        for line in res.get("log", []):
+            self.log("  " + line)
+        if res.get("objectId") and res["objectId"] != app.get("object_id"):
+            app["object_id"] = res["objectId"]
+            if app.get("_bolum"):
+                save_learned(app["_bolum"], {"object_id": res["objectId"]})
+        headers = _unique(res["headers"])
+        return pd.DataFrame(res["rows"], columns=headers, dtype=object)
+
+    def export_menu(self, app: dict, selections: dict) -> pd.DataFrame:
         page, ex = self.page, self.cfg["export"]
         url = self.sheet_url(app, selections)
         self.log(f"Qlik sorgusu: {selections}")
@@ -234,8 +289,7 @@ class QlikSession:
         page.wait_for_timeout(1500)  # secimlerin uygulanmasi icin
         if page.get_by_text(re.compile(r"(No data|Veri yok|Gösterilecek veri yok)", re.I)).count():
             return pd.DataFrame()
-        target.click(button="right")
-        self._click_text(ex["sag_tik_menu"], required=True)
+        self._open_download_menu(target, ex)
         self._click_text(ex["veri_secenegi"], timeout=3000)
         with page.expect_download(timeout=self.timeout) as dl:
             self._click_text(ex["onay_butonu"], timeout=3000)
@@ -247,6 +301,26 @@ class QlikSession:
         page.keyboard.press("Escape")
         raw = pd.read_excel(path, dtype=object) if path.suffix.lower() != ".csv" else pd.read_csv(path, dtype=str)
         return _fix_header(raw)
+
+    def _open_download_menu(self, target, ex):
+        """Indirme menusunu acar: once sag tik, olmazsa nesnenin '...' (daha fazla) butonu."""
+        page = self.page
+        box = target.bounding_box() or {"width": 200, "height": 200}
+        attempts = [
+            lambda: target.click(button="right", position={"x": box["width"] / 2, "y": min(box["height"] / 2, 120)}),
+            lambda: (target.hover(), target.locator(MORE_SEL).first.click(timeout=3000)),
+            lambda: (target.hover(), page.locator(MORE_SEL).first.click(timeout=3000)),
+        ]
+        for attempt in attempts:
+            try:
+                attempt()
+            except Exception:
+                continue
+            if self._click_text(ex["sag_tik_menu"], timeout=3000):
+                return
+            page.keyboard.press("Escape")
+        raise QlikError(f"Indirme menusu bulunamadi (aranan: {ex['sag_tik_menu']}). "
+                        "Ayarlar > Kalibrasyon ile menu adlarini kontrol edin.")
 
     def calibrate(self, app: dict | None = None):
         """Playwright Inspector'i acar: secicileri ve export adimlarini elle bulmak icin."""
@@ -270,7 +344,7 @@ class QlikSource(DataSource):
         sel = {self.f.get(k, k): v for k, v in selections.items() if v}
         ck = tuple(sorted((k, key(v)) for k, v in sel.items()))
         if ck not in self._cache:
-            raw = self.s.export(self.app, sel)
+            raw = self.s.export(self.app, sel, [self.f.get("pn", "PN"), self.f.get("sn", "SN")])
             df = normalize_frame(raw, self.overrides, source="qlik") if not raw.empty else _empty()
             self._cache[ck] = FrameSource(df)
         return self._cache[ck]

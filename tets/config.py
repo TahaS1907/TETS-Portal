@@ -37,7 +37,10 @@ DEFAULTS: dict = {
         "tarayici_yolu": "",         # ozel tarayici exe yolu (opsiyonel)
         "gorunmez": False,
         "zaman_asimi_sn": 90,
-        "bekleme_sn": 600,          # kullanicinin giris/sayfa secimi icin beklenen sure
+        "bekleme_sn": 600,
+        "export_yontemi": "otomatik",  # otomatik: once motor (Engine API), olmazsa menu | motor | menu
+        "motor_url": "",               # bos: wss://<base_url>/app/
+        "max_satir": 200000,          # kullanicinin giris/sayfa secimi icin beklenen sure
         "export": {
             "sag_tik_menu": ["Download", "İndir", "Indir", "Export", "Dışa aktar"],
             "veri_secenegi": ["Data", "Veri", "Export data", "Verileri dışa aktar"],

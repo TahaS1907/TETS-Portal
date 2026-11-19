@@ -129,6 +129,10 @@ class FAResult:
             L.append(f"PARCA : {part_label(self.final)}  ({self.final.get('description', '')})")
         if self.message:
             L.append(f"DETAY : {self.message}")
+        if self.status == "HATA":
+            L.append("NE YAPMALI: Bu bir veri alma hatasidir, FA sonucu degildir. Altta kayit kutusundaki "
+                     "satirlarin ekran goruntusunu iletin; bu arada tabloyu Qlik'ten Excel'e indirip "
+                     "'Excel export dosyalari' moduyla ayni sorguyu calistirabilirsiniz.")
         L.append(f"GUVEN : %{self.confidence:.0f}")
         if self.scenarios:
             L.append("SENARYO: " + ", ".join(SCENARIO_TEXT[s] for s in sorted(self.scenarios)))
