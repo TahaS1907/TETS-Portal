@@ -1,11 +1,13 @@
 // Filtre uygulanmis Qlik tablosunu EKRANDAN okur (indirme yok).
 // Tablo hem asagi (satirlar) hem saga (ekrana sigmayan kolonlar) kaydirilir; her hucre kendi kolon
 // basligiyla eslestirilir. Sanal kaydirmali (sadece gorunen kismi ciziyor) tablolarda da calisir.
-async ({ oid, tableSel, maxRows, waitMs }) => {
+async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
   const root =
     (oid && document.querySelector(`[tid="${oid}"], [data-qid="${oid}"]`)) || document.querySelector(tableSel);
   if (!root) throw new Error("Tablo ekranda bulunamadi");
   const txt = (e) => (e.innerText || e.textContent || "").replace(/\s+/g, " ").trim();
+  const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const known = new Set((knownHeaders || []).map(norm));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const scrollable = (axis) =>
     [root, ...root.querySelectorAll("*")].find((e) => {
@@ -18,48 +20,134 @@ async ({ oid, tableSel, maxRows, waitMs }) => {
   const hS = scrollable("x");
 
   let page = 0; // sayfalamali tablolarda sayfa numarasi (satir anahtarina girer)
+  let mode = ""; // "yapi": th/role isaretleri var | "goz": yazilari konumundan oku
   const headerPos = new Map(); // baslik -> tablodaki yatay konum (siralama icin)
   const rows = new Map(); // satir anahtari -> Map(baslik -> deger)
   const isHeaderRow = (tr) => tr.querySelector("th, [role=columnheader]");
+  const visible = (r) => r.width > 0 && r.height > 0;
+  const CELL = "th, td, [role=columnheader], [role=gridcell], [role=cell], [class*='cell' i], [class*='header' i]";
 
-  const snapshot = () => {
-    let added = 0;
-    const hx = hS ? hS.scrollLeft : 0;
-    const vy = vS ? vS.scrollTop : 0;
-    const baseTop = (vS || root).getBoundingClientRect().top;
+  // --- 1) Yapisal okuma: <th>/<td> veya role isaretleri
+  const structural = () => {
     const heads = [...root.querySelectorAll("thead th, [role=columnheader]")]
       .map((th) => {
         const r = th.getBoundingClientRect();
         return { text: txt(th), left: r.left, right: r.right, ci: th.getAttribute("aria-colindex") };
       })
       .filter((h) => h.text && h.right > h.left);
-    for (const h of heads) if (!headerPos.has(h.text)) headerPos.set(h.text, h.left + hx);
+    const lines = [];
     root.querySelectorAll("tbody tr, [role=row]").forEach((tr) => {
       if (isHeaderRow(tr)) return;
       const cells = [...tr.querySelectorAll("td, [role=gridcell], [role=cell]")];
       if (!cells.length) return;
-      const ri = tr.getAttribute("aria-rowindex");
-      const key = page + ":" + (ri !== null ? "r" + ri : "y" + Math.round(tr.getBoundingClientRect().top - baseTop + vy));
+      lines.push({ top: tr.getBoundingClientRect().top, ri: tr.getAttribute("aria-rowindex"),
+                   cells: cells.map((td) => ({ el: td, r: td.getBoundingClientRect(), ci: td.getAttribute("aria-colindex") })) });
+    });
+    return { heads, lines };
+  };
+
+  // --- 2) Gozle okuma: bilinen kolon adlarini ekrandaki yazilardan bul, altindaki yazilari
+  //        konumlarina gore satir/kolona yerlestir (DOM isaretlerine bagimli degil)
+  const leaves = () =>
+    [...root.querySelectorAll("*")].filter((e) => {
+      if ([...e.children].some((c) => txt(c))) return false;
+      const t = txt(e);
+      return t && visible(e.getBoundingClientRect());
+    });
+  const byEye = () => {
+    const ls = leaves();
+    const hits = ls.filter((e) => known.has(norm(txt(e))));
+    if (!hits.length) return { heads: [], lines: [] };
+    // ayni yatay bantta en cok bilinen baslik olan satir = baslik satiri
+    const bands = [];
+    for (const e of hits) {
+      const r = e.getBoundingClientRect();
+      const cy = (r.top + r.bottom) / 2;
+      let b = bands.find((x) => Math.abs(x.cy - cy) <= 8);
+      if (!b) bands.push((b = { cy, els: [] }));
+      b.els.push(e);
+    }
+    bands.sort((a, b) => b.els.length - a.els.length);
+    const band = bands[0];
+    const headEls = new Set();
+    const heads = band.els.map((e) => {
+      let c = e.closest(CELL);
+      if (!c || !root.contains(c) || c.getBoundingClientRect().width > 700) c = e;
+      headEls.add(c);
+      const r = c.getBoundingClientRect();
+      return { text: txt(e), left: r.left, right: r.right, ci: null, bottom: r.bottom };
+    });
+    const headBottom = Math.max(...heads.map((h) => h.bottom));
+    const cellsAll = ls
+      .filter((e) => ![...headEls].some((h) => h.contains(e)))
+      .map((e) => ({ el: e, r: e.getBoundingClientRect(), ci: null }))
+      .filter((c) => (c.r.top + c.r.bottom) / 2 > headBottom + 1);
+    cellsAll.sort((a, b) => a.r.top - b.r.top);
+    const lines = [];
+    for (const c of cellsAll) {
+      const cy = (c.r.top + c.r.bottom) / 2;
+      let ln = lines.find((l) => Math.abs(l.cy - cy) <= 5);
+      if (!ln) lines.push((ln = { cy, top: cy, ri: null, cells: [] }));
+      ln.cells.push(c);
+    }
+    return { heads, lines };
+  };
+
+  const pickHead = (heads, c) => {
+    if (c.ci !== null) {
+      const h = heads.find((x) => x.ci === c.ci);
+      if (h) return h;
+    }
+    let best = null, bestOv = 0;
+    for (const h of heads) {
+      const ov = Math.min(h.right, c.r.right) - Math.max(h.left, c.r.left);
+      if (ov > bestOv) { bestOv = ov; best = h; }
+    }
+    if (best) return best;
+    return heads.find((h) => Math.abs(h.left - c.r.left) <= 30) || null;
+  };
+
+  const snapshot = () => {
+    let added = 0;
+    const hx = hS ? hS.scrollLeft : 0;
+    const vy = vS ? vS.scrollTop : 0;
+    const baseTop = (vS || root).getBoundingClientRect().top;
+    let res = null;
+    if (mode !== "goz") {
+      res = structural();
+      if (res.heads.length >= 2) mode = "yapi";
+      else if (!mode) res = null;
+    }
+    if (!res || mode === "goz") {
+      res = byEye();
+      if (res.heads.length && !mode) mode = "goz";
+    }
+    const { heads, lines } = res;
+    for (const h of heads) if (!headerPos.has(h.text)) headerPos.set(h.text, h.left + hx);
+    for (const ln of lines) {
+      const key = page + ":" + (ln.ri !== null && ln.ri !== undefined ? "r" + ln.ri : "y" + Math.round(ln.top - baseTop + vy));
       let row = rows.get(key);
       if (!row) {
-        if (rows.size >= maxRows) return;
+        if (rows.size >= maxRows) continue;
         row = new Map();
         rows.set(key, row);
         added++;
       }
-      for (const td of cells) {
-        const ci = td.getAttribute("aria-colindex");
-        let h = ci !== null ? heads.find((x) => x.ci === ci) : null;
-        if (!h) {
-          const r = td.getBoundingClientRect();
-          const cx = (r.left + r.right) / 2;
-          h = heads.find((x) => cx >= x.left && cx <= x.right);
-        }
+      for (const c of ln.cells) {
+        const h = pickHead(heads, c);
         // hucre henuz yuklenmeden bos okunduysa sonraki gorunuste gercek degerle guncellenir
-        if (h && (!row.has(h.text) || row.get(h.text) === "")) row.set(h.text, txt(td));
+        if (h && (!row.has(h.text) || row.get(h.text) === "")) row.set(h.text, txt(c.el));
       }
-    });
+    }
     return added;
+  };
+
+  const diag = () => {
+    const q = (s) => root.querySelectorAll(s).length;
+    const sample = leaves().slice(0, 12).map((e) => txt(e).slice(0, 20)).join(" | ");
+    return `nesne=${root.getAttribute("tid") || root.className}; th=${q("th")} td=${q("td")} tr=${q("tr")} ` +
+      `row=${q("[role=row]")} columnheader=${q("[role=columnheader]")} gridcell=${q("[role=gridcell]")} ` +
+      `div=${q("div")} canvas=${q("canvas")}; ekrandaki ilk yazilar: ${sample}`;
   };
 
   // Bir dikey konumda: tablo saga dogru kaydirilarak tum kolonlar okunur
@@ -105,11 +193,11 @@ async ({ oid, tableSel, maxRows, waitMs }) => {
   }
 
   const headers = [...headerPos.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0]);
-  if (!headers.length) throw new Error("Tablo basliklari ekrandan okunamadi");
+  if (!headers.length) throw new Error("Tablo basliklari ekrandan okunamadi | " + diag());
   const out = [];
   for (const row of rows.values()) {
     const vals = headers.map((h) => row.get(h) ?? "");
     if (vals.some((v) => v !== "")) out.push(vals);
   }
-  return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS };
+  return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS, mode };
 }

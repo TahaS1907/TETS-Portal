@@ -46,8 +46,8 @@ DEFAULTS: dict = {
         "bekleme_sn": 600,
         "export_yontemi": "otomatik",  # otomatik: sayfa baglantisi, olmazsa ekrandan kaydirarak oku (indirme yok)
         "ekran_max_satir": 5000,
-        "ekran_genislik": 2560,      # ekrandan okurken sayfa alani (piksel); 0 = degistirme
-        "ekran_yukseklik": 1600,
+        "ekran_genislik": 0,         # 0 = ekran oldugu gibi okunur; ornek 2560 verilirse sayfa alani genisletilir
+        "ekran_yukseklik": 0,
         "ekran_bekleme_ms": 450,     # her kaydirmadan sonra tablonun cizilmesi icin bekleme
         "motor_url": "",               # bos: wss://<base_url>/app/
         "max_satir": 200000,          # kullanicinin giris/sayfa secimi icin beklenen sure

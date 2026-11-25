@@ -346,8 +346,10 @@ class QlikSession:
             return pd.DataFrame()
         res = page.evaluate(SCREEN_JS, {"oid": oid, "tableSel": TABLE_SEL,
                                         "maxRows": int(self.cfg.get("ekran_max_satir", 5000)),
-                                        "waitMs": int(self.cfg.get("ekran_bekleme_ms", 450))})
+                                        "waitMs": int(self.cfg.get("ekran_bekleme_ms", 450)),
+                                        "knownHeaders": self._known_headers()})
         self.log(f"  ekrandan {len(res['rows'])} satir, {len(res['headers'])} kolon okundu"
+                 + (" (yazilardan tanindi)" if res.get("mode") == "goz" else "")
                  + (" (saga kaydirildi)" if res.get("hscroll") else ""))
         if res.get("truncated"):
             self.log("  UYARI: ekrandan okunan satir limiti doldu")
@@ -372,6 +374,17 @@ class QlikSession:
             page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=30000)
         except Exception:
             pass
+
+    def _known_headers(self) -> list[str]:
+        """Ekranda baslik olarak aranacak kolon adlari (config + bilinen varyasyonlar)."""
+        from ..columns import ALIASES
+        names = [a for al in ALIASES.values() for a in al]
+        for sec in ("fa_hareket", "fa_listesi", "envanter"):
+            names += [v for v in (self.cfg.get(sec, {}).get("alanlar") or {}).values() if v]
+        names += [v for v in (self.cfg_root.get("kolonlar") or {}).values() if v]
+        e = self.cfg.get("envanter", {})
+        names += [e.get("notes_kolonu", ""), e.get("durum_alani", "")]
+        return [n for n in names if n]
 
     def _widen(self):
         """Okumadan once sayfa alanini genis/uzun yapar: Qlik tabloyu buyuk cizer, daha cok kolon ve satir
