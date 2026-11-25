@@ -403,14 +403,12 @@ class QlikSession:
             raise QlikError("Tablo ekranda acilmadi"
                             + (" (Qlik: 'Maksimum kayit sayisi asildi' - filtre uygulanmamis)" if state == "limit" else "")
                             + (f"; secim cubugu: {bar}" if bar else ""))
-        res = page.evaluate(SCREEN_JS, {"oid": oid, "tableSel": TABLE_SEL,
-                                        "maxRows": int(self.cfg.get("ekran_max_satir", 5000)),
-                                        "waitMs": int(self.cfg.get("ekran_bekleme_ms", 450)),
-                                        "knownHeaders": self._known_headers()})
+        res = self._read_screen(oid)
         self.log(f"  ekrandan {len(res['rows'])} satir, {len(res['headers'])} kolon okundu"
                  + (" (yazilardan tanindi)" if res.get("mode") == "goz" else "")
-                 + (" (saga kaydirildi: {adim} adim, tablo genisligi {genislik}px, gorunen {gorunen}px)"
-                    .format(**res["hInfo"]) if res.get("hscroll") and res.get("hInfo") else ""))
+                 + (" (saga kaydirildi: {adim} adim{yol})".format(
+                     adim=res["hInfo"]["adim"], yol=", fare tekerlegiyle" if res["hInfo"].get("tekerlek") else "")
+                    if res.get("hscroll") else " (saga kaydirma olmadi)"))
         self.last_screen_info = res.get("hInfo")
         if res.get("truncated"):
             self.log("  UYARI: ekrandan okunan satir limiti doldu")
@@ -435,6 +433,83 @@ class QlikSession:
             page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=30000)
         except Exception:
             pass
+
+    def _read_screen(self, oid: str) -> dict:
+        """Gorunen tabloyu okur; saga ve asagi kaydirarak tum hucreleri toplar.
+        Yana kaydirma once dogal kaydirma alaniyla, olmazsa GERCEK fare tekerlegiyle yapilir
+        (Qlik tablosu kendi kaydirma mekanizmasini kullaniyor olsa da elle kaydirmak gibi calisir)."""
+        page = self.page
+        wait = int(self.cfg.get("ekran_bekleme_ms", 450))
+        args = {"oid": oid, "tableSel": TABLE_SEL, "maxRows": int(self.cfg.get("ekran_max_satir", 5000)),
+                "waitMs": wait, "knownHeaders": self._known_headers()}
+        js = lambda action: page.evaluate(SCREEN_JS, {**args, "action": action})
+        info = js("init")
+        target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
+        box = target.bounding_box() or {"x": 0, "y": 0, "width": 800, "height": 400}
+        dx = max(150, int(box["width"] * 0.45))
+        steps_total = {"n": 0, "tekerlek": False}
+        native = {"ok": True}  # dogal kaydirma alani gercekten tabloyu kaydiriyor mu
+
+        def mouse_to_table():
+            page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] * 0.6)
+
+        def sweep() -> int:
+            r = js("snap")
+            added, sig, steps, same, wheeled = r["added"], r["sig"], 0, 0, 0
+            while steps < 150:
+                moved = native["ok"] and js("hstep")
+                if not moved:                 # dogal alan yok/sonunda/etkisiz -> gercek fare tekerlegi
+                    mouse_to_table()
+                    page.mouse.wheel(dx, 0)
+                    wheeled += 1
+                page.wait_for_timeout(wait)
+                r = js("snap")
+                added += r["added"]
+                if r["sig"] == sig:           # basliklar kipirdamadi
+                    if moved:                 # bir alan kaydi ama tablo degil: o alan yanlis, tekerlege gec
+                        native["ok"] = False
+                        js("hreset")
+                        continue
+                    same += 1
+                    if same >= 2:             # en saga gelindi
+                        break
+                    continue
+                if not moved:
+                    steps_total["tekerlek"] = True
+                same, sig = 0, r["sig"]
+                steps += 1
+            steps_total["n"] += steps
+            js("hreset")                      # basa don
+            if wheeled:
+                mouse_to_table()
+                for _ in range(wheeled + 3):
+                    page.mouse.wheel(-dx, 0)
+            page.wait_for_timeout(wait)
+            return added
+
+        sweep()
+        if info.get("hasV"):
+            stable = 0
+            while stable < 3:
+                moved = js("vstep")
+                page.wait_for_timeout(wait)
+                n = sweep()
+                stable = 0 if n else stable + 1
+                if not moved:
+                    break
+            js("vreset")
+        for _ in range(500):                  # sayfalamali tablolar
+            if not js("next"):
+                break
+            page.wait_for_timeout(wait + 200)
+            if not sweep():
+                break
+        res = js("result")
+        res["hInfo"] = {"adim": steps_total["n"], "tekerlek": steps_total["tekerlek"],
+                        "genislik": res.get("hInfo", {}).get("genislik", 0),
+                        "gorunen": int(box["width"])}
+        res["hscroll"] = steps_total["n"] > 0
+        return res
 
     def _wait_table(self, oid: str, limit_sn: int | None = None) -> str:
         """Filtreler uygulanip tablo cizilene kadar bekler.

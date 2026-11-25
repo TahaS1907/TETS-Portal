@@ -1,7 +1,13 @@
 // Filtre uygulanmis Qlik tablosunu EKRANDAN okur (indirme yok).
-// Tablo hem asagi (satirlar) hem saga (ekrana sigmayan kolonlar) kaydirilir; her hucre kendi kolon
-// basligiyla eslestirilir. Sanal kaydirmali (sadece gorunen kismi ciziyor) tablolarda da calisir.
-async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
+// Okuyucu tarayicida window.__tets olarak kurulur; kaydirmayi Python tarafi GERCEK fare tekerlegiyle
+// (veya varsa dogal kaydirma alaniyla) yapar ve her adimda "snap" ile gorunen hucreleri toplar.
+// Her hucre kendi kolon basligiyla eslestirilir.
+// action: init | snap | hstep | hreset | vstep | vreset | next | result
+async ({ action, oid, tableSel, maxRows, waitMs, knownHeaders }) => {
+  if (action !== "init") {
+    if (!window.__tets) throw new Error("okuyucu kurulmamis");
+    return window.__tets[action]();
+  }
   const root =
     (oid && document.querySelector(`[tid="${oid}"], [data-qid="${oid}"]`)) || document.querySelector(tableSel);
   if (!root) throw new Error("Tablo ekranda bulunamadi");
@@ -167,57 +173,48 @@ async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
       `div=${q("div")} canvas=${q("canvas")}; ekrandaki ilk yazilar: ${sample}`;
   };
 
-  // Bir dikey konumda: tablo saga dogru kaydirilarak tum kolonlar okunur
-  const sweepRight = async () => {
-    let n = snapshot();
-    if (!hS) return n;
-    let guard = 0;
-    while (guard++ < 150) {
-      const before = hS.scrollLeft;
-      setLeft(before + Math.max(50, hS.clientWidth * 0.6));
-      await sleep(waitMs);
-      if (hS.scrollLeft <= before) break; // en saga gelindi
-      hInfo.adim++;
-      n += snapshot();
-    }
-    setLeft(0);
-    await sleep(waitMs);
-    return n;
+  // gorunen basliklarin imzasi: yatay kayma olduysa degisir
+  const sig = () => {
+    const hs = [...root.querySelectorAll("thead th, [role=columnheader]")];
+    const els = hs.length ? hs : leaves().filter((e) => known.has(norm(txt(e))));
+    return els.map((e) => txt(e) + "@" + Math.round(e.getBoundingClientRect().left)).join("|");
   };
 
-  await sleep(300);
-  await sweepRight();
-  if (vS) {
-    let stable = 0;
-    while (stable < 3 && rows.size < maxRows) {
+  window.__tets = {
+    snap: () => ({ added: snapshot(), sig: sig(), rows: rows.size }),
+    hstep: () => {
+      if (!hS) return false;
+      const before = hS.scrollLeft;
+      setLeft(before + Math.max(50, hS.clientWidth * 0.6));
+      return hS.scrollLeft > before;
+    },
+    hreset: () => { if (hS) setLeft(0); return true; },
+    vstep: () => {
+      if (!vS) return false;
       const before = vS.scrollTop;
-      // kucuk adim: gorunen alanin yarisi, boylece hicbir satir atlanmaz
-      vS.scrollTop = before + Math.max(20, vS.clientHeight * 0.5);
-      await sleep(waitMs);
-      const n = await sweepRight();
-      stable = n ? 0 : stable + 1;
-      if (vS.scrollTop === before) break; // en alta gelindi
-    }
-    vS.scrollTop = 0;
-  }
-  // Sayfalama olan tablolarda sonraki sayfalar
-  const nextSel =
-    "button[aria-label*='Next' i], button[title*='Next' i], button[aria-label*='Sonraki' i], button[title*='Sonraki' i]";
-  for (let i = 0; i < 500 && rows.size < maxRows; i++) {
-    const next = root.querySelector(nextSel);
-    if (!next || next.disabled || next.getAttribute("aria-disabled") === "true") break;
-    next.click();
-    page++;
-    await sleep(waitMs + 200);
-    if (!(await sweepRight())) break;
-  }
-
-  const headers = [...headerPos.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0]);
-  if (!headers.length) throw new Error("Tablo basliklari ekrandan okunamadi | " + diag());
-  const out = [];
-  for (const row of rows.values()) {
-    const vals = headers.map((h) => row.get(h) ?? "");
-    if (vals.some((v) => v !== "")) out.push(vals);
-  }
-  return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS, mode, hInfo };
+      vS.scrollTop = before + Math.max(20, vS.clientHeight * 0.5); // kucuk adim: satir atlanmaz
+      return vS.scrollTop > before;
+    },
+    vreset: () => { if (vS) vS.scrollTop = 0; return true; },
+    next: () => {
+      const next = root.querySelector(
+        "button[aria-label*='Next' i], button[title*='Next' i], button[aria-label*='Sonraki' i], button[title*='Sonraki' i]");
+      if (!next || next.disabled || next.getAttribute("aria-disabled") === "true") return false;
+      next.click();
+      page++;
+      return true;
+    },
+    result: () => {
+      const headers = [...headerPos.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0]);
+      if (!headers.length) throw new Error("Tablo basliklari ekrandan okunamadi | " + diag());
+      const out = [];
+      for (const row of rows.values()) {
+        const vals = headers.map((h) => row.get(h) ?? "");
+        if (vals.some((v) => v !== "")) out.push(vals);
+      }
+      return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS, mode, hInfo };
+    },
+  };
+  await sleep(300);
+  return { hasH: !!hS, hasV: !!vS };
 }
