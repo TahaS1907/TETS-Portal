@@ -365,8 +365,9 @@ class QlikSession:
         oid = oid or self.detect_table() or ""
         target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
         target.wait_for(state="visible", timeout=self.timeout)
-        state = self._wait_table(oid)
-        if state == "limit" and not getattr(self, "_warmed", False):
+        warmed = getattr(self, "_warmed", False)
+        state = self._wait_table(oid, None if warmed else int(self.cfg.get("ucak_secme_sn", 12)))
+        if state == "limit" and not warmed:
             # Kullanicinin elle yaptigi gibi: once listeden bir ucak sec (tablo acilsin), sonra ucagi
             # kaldirip PN/SN filtresiyle tekrar ac.
             self._warmed = True
@@ -416,12 +417,13 @@ class QlikSession:
         except Exception:
             pass
 
-    def _wait_table(self, oid: str) -> str:
+    def _wait_table(self, oid: str, limit_sn: int | None = None) -> str:
         """Filtreler uygulanip tablo cizilene kadar bekler.
         Doner: ok | nodata | limit (Qlik 'maksimum kayit' gosteriyor) | bekle (zaman asimi)."""
         deadline = time.time() + int(self.cfg.get("ekran_yukleme_sn", 40))
         state, said = "bekle", False
         known = self._known_headers()
+        limit_since = None
         while time.time() < deadline:
             try:
                 state = self.page.evaluate(CHECK_JS, {"oid": oid, "tableSel": TABLE_SEL, "known": known})
@@ -430,6 +432,12 @@ class QlikSession:
             if state in ("ok", "nodata"):
                 self.page.wait_for_timeout(600)  # son satirlarin da cizilmesi icin
                 return state
+            if state == "limit":
+                limit_since = limit_since or time.time()
+                if limit_sn and time.time() - limit_since > limit_sn:
+                    return "limit"  # filtre bu surede gelmediyse ucak adimina gec
+            else:
+                limit_since = None
             if state == "limit" and not said:
                 self.log("  filtrelerin uygulanmasi bekleniyor (tablo 'maksimum kayit' gosteriyor)")
                 said = True

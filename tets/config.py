@@ -49,7 +49,8 @@ DEFAULTS: dict = {
         "ekran_genislik": 0,         # 0 = ekran oldugu gibi okunur; ornek 2560 verilirse sayfa alani genisletilir
         "ekran_yukseklik": 0,
         "ekran_bekleme_ms": 450,
-        "ekran_yukleme_sn": 40,      # filtre sonrasi tablonun gelmesi icin en fazla bekleme     # her kaydirmadan sonra tablonun cizilmesi icin bekleme
+        "ekran_yukleme_sn": 40,
+        "ucak_secme_sn": 12,         # tablo bu kadar sn 'maksimum kayit' gosterirse once bir ucak secilir      # filtre sonrasi tablonun gelmesi icin en fazla bekleme     # her kaydirmadan sonra tablonun cizilmesi icin bekleme
         "motor_url": "",               # bos: wss://<base_url>/app/
         "max_satir": 200000,          # kullanicinin giris/sayfa secimi icin beklenen sure
         "export": {
