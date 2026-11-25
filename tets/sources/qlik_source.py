@@ -65,6 +65,26 @@ DETECT_JS = """(sels) => {
 }"""
 
 
+# Tablo hazir mi? ok: basliklar gorunuyor | nodata | limit: 'maksimum kayit asildi' mesaji | bekle
+CHECK_JS = """({ oid, tableSel, known }) => {
+  const root = (oid && document.querySelector(`[tid="${oid}"], [data-qid="${oid}"]`)) || document.querySelector(tableSel);
+  if (!root) return 'bekle';
+  const t = (root.innerText || '');
+  if (/(No data|Veri yok|Gösterilecek veri yok)/i.test(t)) return 'nodata';
+  if (/(Maksimum kay|maximum number of|exceed|calculation condition|hesaplama ko)/i.test(t)) return 'limit';
+  if (root.querySelectorAll('th, [role=columnheader]').length >= 2) return 'ok';
+  const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const K = new Set(known.map(norm));
+  let n = 0;
+  for (const e of root.querySelectorAll('*')) {
+    if ([...e.children].some(c => (c.innerText || '').trim())) continue;
+    if (K.has(norm(e.innerText))) n++;
+    if (n >= 3) return 'ok';
+  }
+  return 'bekle';
+}"""
+
+
 class QlikError(RuntimeError):
     pass
 
@@ -80,6 +100,7 @@ class QlikSession:
         self._pw = self.browser = self.context = self.page = None
         self.ws_urls: list[str] = []  # Qlik sayfasinin kendi actigi motor baglantilari
         self.good_method = ""         # bu oturumda ise yarayan okuma yontemi
+        self.dead_methods: set[str] = set()
 
     # ------------------------------------------------------------------ yasam dongusu
     def __enter__(self):
@@ -282,6 +303,7 @@ class QlikSession:
         self.resolve_sheet(app)
         chosen = self.cfg.get("export_yontemi", "otomatik")
         order = list(methods or self.CHOICES.get(chosen, self.CHOICES["otomatik"]))
+        order = [m for m in order if m not in self.dead_methods] or order
         if self.good_method in order and not methods:
             order.remove(self.good_method)
             order.insert(0, self.good_method)
@@ -323,6 +345,8 @@ class QlikSession:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
                 errors.append(f"{self.METHODS[m]}: {msg}")
                 self.log(f"  {self.METHODS[m]} olmadi -> {msg}")
+                if m in ("sayfa", "motor"):
+                    self.dead_methods.add(m)  # bu ortamda calismiyor: oturum boyunca tekrar deneme
                 continue
             if self.good_method != m:
                 self.log(f"» Veri '{self.METHODS[m]}' yontemiyle okunuyor.")
@@ -341,9 +365,26 @@ class QlikSession:
         oid = oid or self.detect_table() or ""
         target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
         target.wait_for(state="visible", timeout=self.timeout)
-        page.wait_for_timeout(2000)  # filtrelerin uygulanip tablonun yenilenmesi
-        if page.get_by_text(re.compile(r"(No data|Veri yok|Gösterilecek veri yok)", re.I)).count():
+        state = self._wait_table(oid)
+        if state == "limit" and not getattr(self, "_warmed", False):
+            # Kullanicinin elle yaptigi gibi: once listeden bir ucak sec (tablo acilsin), sonra ucagi
+            # kaldirip PN/SN filtresiyle tekrar ac.
+            self._warmed = True
+            ac = self._first_aircraft()
+            field = (app.get("alanlar") or {}).get("aircraft", "AC")
+            if ac:
+                self.log(f"» Tablo acilmadi; once ucak seciliyor ({ac}), sonra filtreler uygulanacak")
+                page.goto(self.sheet_url(app, {field: ac}), wait_until="domcontentloaded")
+                self._wait_table(oid)
+                page.goto(self.sheet_url(app, sel), wait_until="domcontentloaded")
+                state = self._wait_table(oid)
+        if state == "nodata":
             return pd.DataFrame()
+        if state != "ok":
+            bar = self._selection_bar_text()
+            raise QlikError("Tablo ekranda acilmadi"
+                            + (" (Qlik: 'Maksimum kayit sayisi asildi' - filtre uygulanmamis)" if state == "limit" else "")
+                            + (f"; secim cubugu: {bar}" if bar else ""))
         res = page.evaluate(SCREEN_JS, {"oid": oid, "tableSel": TABLE_SEL,
                                         "maxRows": int(self.cfg.get("ekran_max_satir", 5000)),
                                         "waitMs": int(self.cfg.get("ekran_bekleme_ms", 450)),
@@ -374,6 +415,48 @@ class QlikSession:
             page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=30000)
         except Exception:
             pass
+
+    def _wait_table(self, oid: str) -> str:
+        """Filtreler uygulanip tablo cizilene kadar bekler.
+        Doner: ok | nodata | limit (Qlik 'maksimum kayit' gosteriyor) | bekle (zaman asimi)."""
+        deadline = time.time() + int(self.cfg.get("ekran_yukleme_sn", 40))
+        state, said = "bekle", False
+        known = self._known_headers()
+        while time.time() < deadline:
+            try:
+                state = self.page.evaluate(CHECK_JS, {"oid": oid, "tableSel": TABLE_SEL, "known": known})
+            except Exception:
+                state = "bekle"  # sayfa gecisi
+            if state in ("ok", "nodata"):
+                self.page.wait_for_timeout(600)  # son satirlarin da cizilmesi icin
+                return state
+            if state == "limit" and not said:
+                self.log("  filtrelerin uygulanmasi bekleniyor (tablo 'maksimum kayit' gosteriyor)")
+                said = True
+            self.page.wait_for_timeout(500)
+        return state
+
+    def _first_aircraft(self) -> str:
+        """Sayfadaki AC listesinden ilk ucak tescilini alir (orn. 2-ADAE, TC-JFV)."""
+        try:
+            return self.page.evaluate(r"""() => {
+              const rx = /^[A-Z0-9]{1,2}-[A-Z0-9]{3,5}$/;
+              for (const e of document.querySelectorAll('*')) {
+                if ([...e.children].some(c => (c.innerText || '').trim())) continue;
+                const t = (e.innerText || '').trim();
+                if (rx.test(t)) return t;
+              }
+              return '';
+            }""") or ""
+        except Exception:
+            return ""
+
+    def _selection_bar_text(self) -> str:
+        try:
+            loc = self.page.get_by_text(re.compile(r"No selections applied|Seçim uygulanmadı", re.I))
+            return "secim yok (No selections applied)" if loc.count() else ""
+        except Exception:
+            return ""
 
     def _known_headers(self) -> list[str]:
         """Ekranda baslik olarak aranacak kolon adlari (config + bilinen varyasyonlar)."""
