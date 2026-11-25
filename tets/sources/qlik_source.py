@@ -67,11 +67,13 @@ DETECT_JS = """(sels) => {
 
 # Tablo hazir mi? ok: basliklar gorunuyor | nodata | limit: 'maksimum kayit asildi' mesaji | bekle
 CHECK_JS = """({ oid, tableSel, known }) => {
+  const page = document.body ? document.body.innerText : '';
+  if (/(Invalid parameters|Invalid Match|An error occurred|Bir hata olu|Geçersiz parametre)/i.test(page)) return 'qerror';
   const root = (oid && document.querySelector(`[tid="${oid}"], [data-qid="${oid}"]`)) || document.querySelector(tableSel);
   if (!root) return 'bekle';
   const t = (root.innerText || '');
   if (/(No data|Veri yok|Gösterilecek veri yok)/i.test(t)) return 'nodata';
-  if (/(Maksimum kay|maximum number of|exceed|calculation condition|hesaplama ko)/i.test(t)) return 'limit';
+  if (/(Maksimum kay|maximum number of|exceed|calculation condition|hesaplama ko|filtreleme yap)/i.test(t)) return 'limit';
   if (root.querySelectorAll('th, [role=columnheader]').length >= 2) return 'ok';
   const norm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const K = new Set(known.map(norm));
@@ -253,7 +255,9 @@ class QlikSession:
         return app
 
     # ------------------------------------------------------------------ export
-    def sheet_url(self, app: dict, selections: dict[str, str | list]) -> str:
+    def sheet_url(self, app: dict, selections: dict[str, str | list], fmt: str | None = None) -> str:
+        """Qlik uygulama adresi + filtreler. fmt: 'koseli' -> [deger] | 'duz' -> deger"""
+        fmt = fmt or getattr(self, "sel_format", "koseli")
         url = f"{self._root()}/sense/app/{app['app_id']}"
         if app.get("sheet_id"):
             url += f"/sheet/{app['sheet_id']}"
@@ -263,7 +267,7 @@ class QlikSession:
             vals = [str(v) for v in vals if str(v).strip()]
             if not field or not vals:
                 continue
-            joined = ";".join(f"[{v}]" for v in vals)
+            joined = ";".join(f"[{v}]" if fmt == "koseli" else v for v in vals)
             url += f"/select/{quote(field, safe='')}/{quote(joined, safe='')}"
         return url
 
@@ -360,13 +364,26 @@ class QlikSession:
         sel = {f: v for f, v in selections.items() if f and str(v).strip()}
         self.log(f"Qlik filtresi: {sel}")
         self._widen()
-        page.goto(self.sheet_url(app, sel), wait_until="domcontentloaded")
-        oid = app.get("object_id", "")
-        oid = oid or self.detect_table() or ""
-        target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
-        target.wait_for(state="visible", timeout=self.timeout)
         warmed = getattr(self, "_warmed", False)
-        state = self._wait_table(oid, None if warmed else int(self.cfg.get("ucak_secme_sn", 12)))
+        cur = getattr(self, "sel_format", "koseli")
+        oid = app.get("object_id", "")
+        for fmt in [cur] + [f for f in ("koseli", "duz") if f != cur]:
+            page.goto(self.sheet_url(app, sel, fmt), wait_until="domcontentloaded")
+            oid = oid or self.detect_table() or ""
+            target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
+            target.wait_for(state="visible", timeout=self.timeout)
+            state = self._wait_table(oid, None if warmed else int(self.cfg.get("ucak_secme_sn", 12)))
+            if state != "qerror":
+                if fmt != cur:
+                    self.sel_format = fmt
+                    self.log(f"» Qlik filtreleri '{'koseli parantezsiz' if fmt == 'duz' else 'koseli parantezli'}'"
+                             " yazimla uygulaniyor")
+                break
+            self.log(f"  Qlik filtreyi kabul etmedi (Invalid parameters) [{fmt} yazim]; diger yazim deneniyor")
+            self._close_qlik_error()
+        if state == "qerror":
+            raise QlikError("Qlik filtreyi kabul etmedi (Invalid parameters / Invalid Match index). "
+                            f"Filtre: {sel}")
         if state == "limit" and not warmed:
             # Kullanicinin elle yaptigi gibi: once listeden bir ucak sec (tablo acilsin), sonra ucagi
             # kaldirip PN/SN filtresiyle tekrar ac.
@@ -429,6 +446,8 @@ class QlikSession:
                 state = self.page.evaluate(CHECK_JS, {"oid": oid, "tableSel": TABLE_SEL, "known": known})
             except Exception:
                 state = "bekle"  # sayfa gecisi
+            if state == "qerror":
+                return state
             if state in ("ok", "nodata"):
                 self.page.wait_for_timeout(600)  # son satirlarin da cizilmesi icin
                 return state
@@ -443,6 +462,21 @@ class QlikSession:
                 said = True
             self.page.wait_for_timeout(500)
         return state
+
+    def _close_qlik_error(self):
+        """Qlik'in 'An error occurred' penceresini kapatir."""
+        for name in ("Close", "Kapat", "OK", "Tamam"):
+            try:
+                b = self.page.get_by_role("button", name=name, exact=True)
+                if b.count() and b.first.is_visible():
+                    b.first.click()
+                    return
+            except Exception:
+                pass
+        try:
+            self.page.keyboard.press("Escape")
+        except Exception:
+            pass
 
     def _first_aircraft(self) -> str:
         """Sayfadaki AC listesinden ilk ucak tescilini alir (orn. 2-ADAE, TC-JFV)."""
