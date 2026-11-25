@@ -9,15 +9,26 @@ async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
   const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
   const known = new Set((knownHeaders || []).map(norm));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const scrollable = (axis) =>
-    [root, ...root.querySelectorAll("*")].find((e) => {
+  // Kaydirilabilir alanlar: tablonun ASIL kaydirma alani en buyuk olandir (kucuk ic alanlar degil)
+  const scrollers = (axis) =>
+    [root, ...root.querySelectorAll("*")].filter((e) => {
       const s = getComputedStyle(e);
       return axis === "y"
-        ? e.scrollHeight > e.clientHeight + 5 && /(auto|scroll)/.test(s.overflowY)
-        : e.scrollWidth > e.clientWidth + 5 && /(auto|scroll)/.test(s.overflowX);
+        ? e.scrollHeight > e.clientHeight + 5 && /(auto|scroll|overlay)/.test(s.overflowY)
+        : e.scrollWidth > e.clientWidth + 5 && /(auto|scroll|overlay)/.test(s.overflowX);
     });
-  const vS = scrollable("y");
-  const hS = scrollable("x");
+  const biggest = (list, axis) =>
+    list.sort((a, b) => (axis === "y" ? b.scrollHeight - a.scrollHeight : b.scrollWidth - a.scrollWidth))[0] || null;
+  const hAll = scrollers("x");
+  const vAll = scrollers("y");
+  const hS = biggest([...hAll], "x");
+  const vS = biggest([...vAll], "y");
+  const hInfo = { adim: 0, alan: hAll.length, genislik: hS ? hS.scrollWidth : 0, gorunen: hS ? hS.clientWidth : 0 };
+  // ana alani kaydirirken diger yatay alanlari (orn. ayri baslik alani) da ayni konuma getir
+  const setLeft = (x) => {
+    hS.scrollLeft = x;
+    for (const o of hAll) if (o !== hS) o.scrollLeft = hS.scrollLeft;
+  };
 
   let page = 0; // sayfalamali tablolarda sayfa numarasi (satir anahtarina girer)
   let mode = ""; // "yapi": th/role isaretleri var | "goz": yazilari konumundan oku
@@ -25,21 +36,27 @@ async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
   const rows = new Map(); // satir anahtari -> Map(baslik -> deger)
   const isHeaderRow = (tr) => tr.querySelector("th, [role=columnheader]");
   const visible = (r) => r.width > 0 && r.height > 0;
+  const TOTAL = /^(Totals?|Toplam|Genel toplam)$/i;
   const CELL = "th, td, [role=columnheader], [role=gridcell], [role=cell], [class*='cell' i], [class*='header' i]";
 
   // --- 1) Yapisal okuma: <th>/<td> veya role isaretleri
   const structural = () => {
-    const heads = [...root.querySelectorAll("thead th, [role=columnheader]")]
+    let heads = [...root.querySelectorAll("thead th, [role=columnheader]")]
       .map((th) => {
         const r = th.getBoundingClientRect();
-        return { text: txt(th), left: r.left, right: r.right, ci: th.getAttribute("aria-colindex") };
+        return { text: txt(th), left: r.left, right: r.right, top: r.top, ci: th.getAttribute("aria-colindex") };
       })
-      .filter((h) => h.text && h.right > h.left);
+      .filter((h) => h.text && h.right > h.left && !TOTAL.test(h.text));
+    // sadece en ustteki baslik satiri (alttaki "Totals" satiri baslik degildir)
+    if (heads.length) {
+      const minTop = Math.min(...heads.map((h) => h.top));
+      heads = heads.filter((h) => h.top <= minTop + 6);
+    }
     const lines = [];
     root.querySelectorAll("tbody tr, [role=row]").forEach((tr) => {
       if (isHeaderRow(tr)) return;
       const cells = [...tr.querySelectorAll("td, [role=gridcell], [role=cell]")];
-      if (!cells.length) return;
+      if (!cells.length || TOTAL.test(txt(cells[0]))) return;
       lines.push({ top: tr.getBoundingClientRect().top, ri: tr.getAttribute("aria-rowindex"),
                    cells: cells.map((td) => ({ el: td, r: td.getBoundingClientRect(), ci: td.getAttribute("aria-colindex") })) });
     });
@@ -90,7 +107,7 @@ async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
       if (!ln) lines.push((ln = { cy, top: cy, ri: null, cells: [] }));
       ln.cells.push(c);
     }
-    return { heads, lines };
+    return { heads, lines: lines.filter((l) => !l.cells.some((c) => TOTAL.test(txt(c.el)))) };
   };
 
   const pickHead = (heads, c) => {
@@ -155,12 +172,15 @@ async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
     let n = snapshot();
     if (!hS) return n;
     let guard = 0;
-    while (hS.scrollLeft + hS.clientWidth < hS.scrollWidth - 2 && guard++ < 100) {
-      hS.scrollLeft = hS.scrollLeft + Math.max(50, hS.clientWidth * 0.6);
+    while (guard++ < 150) {
+      const before = hS.scrollLeft;
+      setLeft(before + Math.max(50, hS.clientWidth * 0.6));
       await sleep(waitMs);
+      if (hS.scrollLeft <= before) break; // en saga gelindi
+      hInfo.adim++;
       n += snapshot();
     }
-    hS.scrollLeft = 0;
+    setLeft(0);
     await sleep(waitMs);
     return n;
   };
@@ -199,5 +219,5 @@ async ({ oid, tableSel, maxRows, waitMs, knownHeaders }) => {
     const vals = headers.map((h) => row.get(h) ?? "");
     if (vals.some((v) => v !== "")) out.push(vals);
   }
-  return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS, mode };
+  return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS, mode, hInfo };
 }

@@ -344,7 +344,7 @@ class QlikSession:
                                 save_learned(app["_bolum"], {"object_id": tid})
                             i -= 1
                             continue
-                    raise QlikError(f"okunan tabloda {miss} kolonu yok (gelen: {list(df.columns)[:6]})")
+                    raise QlikError(f"okunan tabloda {miss} kolonu yok (okunan kolonlar: {list(df.columns)})")
             except Exception as e:
                 msg = str(e).split("\n")[0].replace("Page.evaluate: ", "")
                 errors.append(f"{self.METHODS[m]}: {msg}")
@@ -409,7 +409,9 @@ class QlikSession:
                                         "knownHeaders": self._known_headers()})
         self.log(f"  ekrandan {len(res['rows'])} satir, {len(res['headers'])} kolon okundu"
                  + (" (yazilardan tanindi)" if res.get("mode") == "goz" else "")
-                 + (" (saga kaydirildi)" if res.get("hscroll") else ""))
+                 + (" (saga kaydirildi: {adim} adim, tablo genisligi {genislik}px, gorunen {gorunen}px)"
+                    .format(**res["hInfo"]) if res.get("hscroll") and res.get("hInfo") else ""))
+        self.last_screen_info = res.get("hInfo")
         if res.get("truncated"):
             self.log("  UYARI: ekrandan okunan satir limiti doldu")
         return pd.DataFrame(res["rows"], columns=_unique(res["headers"]), dtype=object)
