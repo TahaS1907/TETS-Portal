@@ -406,8 +406,10 @@ class QlikSession:
         res = self._read_screen(oid)
         self.log(f"  ekrandan {len(res['rows'])} satir, {len(res['headers'])} kolon okundu"
                  + (" (yazilardan tanindi)" if res.get("mode") == "goz" else "")
-                 + (" (saga kaydirildi: {adim} adim{yol})".format(
-                     adim=res["hInfo"]["adim"], yol=", fare tekerlegiyle" if res["hInfo"].get("tekerlek") else "")
+                 + (" (saga kaydirildi: {adim} adim, {yol})".format(
+                     adim=res["hInfo"]["adim"],
+                     yol={"dogal": "kaydirma alaniyla", "cubuk": "alttaki kaydirma cubugu suruklenerek",
+                          "tekerlek": "fare tekerlegiyle"}.get(res["hInfo"].get("yol"), ""))
                     if res.get("hscroll") else " (saga kaydirma olmadi)"))
         self.last_screen_info = res.get("hInfo")
         if res.get("truncated"):
@@ -447,43 +449,84 @@ class QlikSession:
         target = page.locator(f"[tid='{oid}'], [data-qid='{oid}']").first if oid else page.locator(TABLE_SEL).first
         box = target.bounding_box() or {"x": 0, "y": 0, "width": 800, "height": 400}
         dx = max(150, int(box["width"] * 0.45))
-        steps_total = {"n": 0, "tekerlek": False}
-        native = {"ok": True}  # dogal kaydirma alani gercekten tabloyu kaydiriyor mu
+        steps_total = {"n": 0, "yol": ""}
+        # Yana kaydirma yollari: dogal kaydirma alani > alttaki kaydirma cubugunu surukleme > fare tekerlegi.
+        # Tabloyu gercekten kaydiran (basliklar yer degistiren) yol bulunur ve hep o kullanilir.
+        state = {"yol": None, "olu": set()}
 
         def mouse_to_table():
             page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] * 0.6)
 
+        def drag_bar(direction: int) -> bool:
+            bar = js("hbar")
+            if not bar:
+                return False
+            th = bar["thumb"] or {"x": bar["track"]["x"], "y": bar["track"]["y"],
+                                  "w": max(20, bar["track"]["w"] * 0.1), "h": bar["track"]["h"]}
+            x0, y0 = th["x"] + th["w"] / 2, th["y"] + th["h"] / 2
+            if direction > 0:   # cubugu kendi genisliginin %60'i kadar saga cek: hicbir kolon atlanmaz
+                x1 = x0 + max(10, th["w"] * 0.6)
+            else:               # en basa geri cek
+                x1 = bar["track"]["x"] - 50
+            page.mouse.move(x0, y0)
+            page.mouse.down()
+            page.mouse.move(x1, y0, steps=8)
+            page.mouse.up()
+            return True
+
+        def try_move(yol: str) -> bool:
+            if yol == "dogal":
+                return js("hstep")
+            if yol == "cubuk":
+                return drag_bar(+1)
+            mouse_to_table()
+            page.mouse.wheel(dx, 0)
+            return True
+
+        def back_left(yol: str, steps: int):
+            js("hreset")
+            if yol == "cubuk":
+                drag_bar(-1)
+            elif yol == "tekerlek":
+                mouse_to_table()
+                for _ in range(steps + 3):
+                    page.mouse.wheel(-dx, 0)
+
         def sweep() -> int:
             r = js("snap")
-            added, sig, steps, same, wheeled = r["added"], r["sig"], 0, 0, 0
+            added, sig, steps, same = r["added"], r["sig"], 0, 0
             while steps < 150:
-                moved = native["ok"] and js("hstep")
-                if not moved:                 # dogal alan yok/sonunda/etkisiz -> gercek fare tekerlegi
-                    mouse_to_table()
-                    page.mouse.wheel(dx, 0)
-                    wheeled += 1
-                page.wait_for_timeout(wait)
-                r = js("snap")
-                added += r["added"]
-                if r["sig"] == sig:           # basliklar kipirdamadi
-                    if moved:                 # bir alan kaydi ama tablo degil: o alan yanlis, tekerlege gec
-                        native["ok"] = False
-                        js("hreset")
+                order = [state["yol"]] if state["yol"] else [y for y in ("dogal", "cubuk", "tekerlek")
+                                                             if y not in state["olu"]]
+                moved_any = False
+                for yol in order:
+                    if not try_move(yol):
+                        if not state["yol"]:
+                            state["olu"].add(yol)
                         continue
-                    same += 1
-                    if same >= 2:             # en saga gelindi
+                    page.wait_for_timeout(wait)
+                    r = js("snap")
+                    added += r["added"]
+                    if r["sig"] != sig:       # tablo gercekten kaydi
+                        state["yol"] = yol
+                        moved_any = True
                         break
+                    if not state["yol"]:      # bu yol tabloyu kaydirmiyor
+                        state["olu"].add(yol)
+                        back_left(yol, 1)
+                if moved_any:
+                    same, sig = 0, r["sig"]
+                    steps += 1
                     continue
-                if not moved:
-                    steps_total["tekerlek"] = True
-                same, sig = 0, r["sig"]
-                steps += 1
+                if not state["yol"]:
+                    break                     # hicbir yol kaydirmiyor (ya da kaydirilacak bir sey yok)
+                same += 1
+                if same >= 2:                 # en saga gelindi
+                    break
             steps_total["n"] += steps
-            js("hreset")                      # basa don
-            if wheeled:
-                mouse_to_table()
-                for _ in range(wheeled + 3):
-                    page.mouse.wheel(-dx, 0)
+            if state["yol"]:
+                steps_total["yol"] = state["yol"]
+                back_left(state["yol"], steps)
             page.wait_for_timeout(wait)
             return added
 
@@ -505,7 +548,7 @@ class QlikSession:
             if not sweep():
                 break
         res = js("result")
-        res["hInfo"] = {"adim": steps_total["n"], "tekerlek": steps_total["tekerlek"],
+        res["hInfo"] = {"adim": steps_total["n"], "yol": steps_total["yol"],
                         "genislik": res.get("hInfo", {}).get("genislik", 0),
                         "gorunen": int(box["width"])}
         res["hscroll"] = steps_total["n"] > 0

@@ -16,8 +16,11 @@ async ({ action, oid, tableSel, maxRows, waitMs, knownHeaders }) => {
   const known = new Set((knownHeaders || []).map(norm));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // Kaydirilabilir alanlar: tablonun ASIL kaydirma alani en buyuk olandir (kucuk ic alanlar degil)
+  // tablo ve onu saran kutular (kaydirma alani tablonun disinda, saran kutuda olabilir)
+  const ancestors = [];
+  for (let p = root.parentElement, i = 0; p && i < 8 && p !== document.body; p = p.parentElement, i++) ancestors.push(p);
   const scrollers = (axis) =>
-    [root, ...root.querySelectorAll("*")].filter((e) => {
+    [...ancestors, root, ...root.querySelectorAll("*")].filter((e) => {
       const s = getComputedStyle(e);
       return axis === "y"
         ? e.scrollHeight > e.clientHeight + 5 && /(auto|scroll|overlay)/.test(s.overflowY)
@@ -177,7 +180,9 @@ async ({ action, oid, tableSel, maxRows, waitMs, knownHeaders }) => {
   const sig = () => {
     const hs = [...root.querySelectorAll("thead th, [role=columnheader]")];
     const els = hs.length ? hs : leaves().filter((e) => known.has(norm(txt(e))));
-    return els.map((e) => txt(e) + "@" + Math.round(e.getBoundingClientRect().left)).join("|");
+    // konum tablonun kendisine gore: sayfanin tamami kaysa da degismez, sadece tablo ici kayarsa degisir
+    const L = root.getBoundingClientRect().left;
+    return els.map((e) => txt(e) + "@" + Math.round(e.getBoundingClientRect().left - L)).join("|");
   };
 
   window.__tets = {
@@ -189,6 +194,38 @@ async ({ action, oid, tableSel, maxRows, waitMs, knownHeaders }) => {
       return hS.scrollLeft > before;
     },
     hreset: () => { if (hS) setLeft(0); return true; },
+    // Tablonun altindaki yatay kaydirma cubugu (yeri satir sayisina gore degisir): cubuk + tutulacak parca
+    hbar: () => {
+      const tb = root.getBoundingClientRect();
+      const inArea = (r) => r.right > tb.left && r.left < tb.right && r.top >= tb.top - 5 && r.bottom <= tb.bottom + 40;
+      const all = [...document.querySelectorAll("*")];
+      const tracks = all.filter((e) => {
+        const r = e.getBoundingClientRect();
+        if (!(r.width >= tb.width * 0.3 && r.height >= 3 && r.height <= 26 && inArea(r))) return false;
+        const cls = (e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className) || "";
+        return /scroll|track|rail|bar/i.test(cls) || e.getAttribute("role") === "scrollbar";
+      });
+      let best = null;
+      for (const t of tracks) {
+        const tr = t.getBoundingClientRect();
+        const kids = [...t.querySelectorAll("*")].map((k) => [k, k.getBoundingClientRect()])
+          .filter(([k, r]) => r.width >= 12 && r.width < tr.width - 4 && Math.abs(r.height - tr.height) <= 8 && r.height >= 3);
+        kids.sort((a, b) => b[1].width - a[1].width);
+        const th = kids.length ? kids[0][1] : null;
+        const cand = { track: { x: tr.left, y: tr.top, w: tr.width, h: tr.height },
+                       thumb: th ? { x: th.left, y: th.top, w: th.width, h: th.height } : null };
+        // tutulacak parcasi olan, en genis ve tablonun en altina yakin cubuk
+        const score = (th ? 1e6 : 0) + tr.width + tr.top;
+        if (!best || score > best.score) best = { ...cand, score, el: t, thEl: kids.length ? kids[0][0] : null };
+      }
+      if (!best) return null;
+      // cubuk ekranin gorunen kisminin disindaysa gorunur hale getir, sonra yeniden olc
+      best.el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      const tr = best.el.getBoundingClientRect();
+      const th = best.thEl ? best.thEl.getBoundingClientRect() : null;
+      return { track: { x: tr.left, y: tr.top, w: tr.width, h: tr.height },
+               thumb: th ? { x: th.left, y: th.top, w: th.width, h: th.height } : null };
+    },
     vstep: () => {
       if (!vS) return false;
       const before = vS.scrollTop;
