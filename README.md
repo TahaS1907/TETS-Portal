@@ -59,9 +59,10 @@ Excel raporu (`Raporlar/`): **Özet** (renkli), **Döngü Zinciri**, **Alternati
 
 ## Veri kaynağı
 
-- **Qlik'ten okuma yöntemi (Ayarlar sekmesi):** *Otomatik* önce filtreleri uygulayıp tabloyu ekrandan okur
-  (indirme yapmaz); ekranda gerekli kolonlardan biri görünmüyorsa güvenli tarafta kalıp *Download as* ile indirir.
-  *Sadece ekrandan* veya *Sadece Download as* da seçilebilir. Envanter her zaman *Download as* ile indirilir.
+- **Qlik'ten okuma (indirme yok):** FA takibinde filtreler Qlik'te uygulanır, tablo **ekrandan okunur**.
+  Sistem tabloyu aşağı (satırlar) ve sağa (ekrana sığmayan kolonlar) kaydırarak her hücreyi kendi başlığıyla
+  eşleştirir; okumadan önce sayfa alanı genişletilir (config: `ekran_genislik`/`ekran_yukseklik`). Gerekli
+  kolonlardan biri okunamazsa yanlış sonuç vermek yerine hata verir. Envanter sekmesi Download as kullanır.
 - **Canlı Qlik Sense:** Giriş kullanıcı tarafından tarayıcıda yapılır; sonra her sorgu Qlik'in uygulama entegrasyon URL'i
   (`/sense/app/<app>/sheet/<sheet>/state/analysis/options/clearselections/select/<alan>/<değer>`) ile seçimli açılır,
   tablo sağ tık > İndir > Veri ile Excel'e alınır. Oturum boyunca aynı sorgu tekrar çekilmez. Şifre sadece bellekte tutulur.

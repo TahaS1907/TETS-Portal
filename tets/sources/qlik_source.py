@@ -267,10 +267,10 @@ class QlikSession:
             raise QlikError(f"Menude su seceneklerden biri bulunamadi: {labels}")
         return False
 
-    # Otomatik modda deneme sirasi: indirmeden okuma yollari once, "Download as" yedekte.
     METHODS = {"sayfa": "sayfanin kendi Qlik baglantisi", "ekran": "filtre + ekrandan okuma (indirmeden)",
                "menu": "sag tik > Download as > Apply", "motor": "motor (WebSocket) baglantisi"}
-    CHOICES = {"otomatik": ["sayfa", "ekran", "menu", "motor"], "ekran": ["ekran"], "menu": ["menu"],
+    # FA takibinde indirme YOK: otomatik = sayfa baglantisi, olmazsa ekrandan (kaydirarak) okuma.
+    CHOICES = {"otomatik": ["sayfa", "ekran"], "ekran": ["ekran"], "menu": ["menu"],
                "sayfa": ["sayfa"], "motor": ["motor"]}
 
     def export(self, app: dict, selections: dict, must_have: list[str] | None = None,
@@ -335,6 +335,7 @@ class QlikSession:
         page = self.page
         sel = {f: v for f, v in selections.items() if f and str(v).strip()}
         self.log(f"Qlik filtresi: {sel}")
+        self._widen()
         page.goto(self.sheet_url(app, sel), wait_until="domcontentloaded")
         oid = app.get("object_id", "")
         oid = oid or self.detect_table() or ""
@@ -344,7 +345,10 @@ class QlikSession:
         if page.get_by_text(re.compile(r"(No data|Veri yok|Gösterilecek veri yok)", re.I)).count():
             return pd.DataFrame()
         res = page.evaluate(SCREEN_JS, {"oid": oid, "tableSel": TABLE_SEL,
-                                        "maxRows": int(self.cfg.get("ekran_max_satir", 5000))})
+                                        "maxRows": int(self.cfg.get("ekran_max_satir", 5000)),
+                                        "waitMs": int(self.cfg.get("ekran_bekleme_ms", 450))})
+        self.log(f"  ekrandan {len(res['rows'])} satir, {len(res['headers'])} kolon okundu"
+                 + (" (saga kaydirildi)" if res.get("hscroll") else ""))
         if res.get("truncated"):
             self.log("  UYARI: ekrandan okunan satir limiti doldu")
         return pd.DataFrame(res["rows"], columns=_unique(res["headers"]), dtype=object)
@@ -368,6 +372,17 @@ class QlikSession:
             page.locator(TABLE_SEL).first.wait_for(state="visible", timeout=30000)
         except Exception:
             pass
+
+    def _widen(self):
+        """Okumadan once sayfa alanini genis/uzun yapar: Qlik tabloyu buyuk cizer, daha cok kolon ve satir
+        ayni anda gorunur, kaydirma azalir. (config: ekran_genislik / ekran_yukseklik, 0 = kapali)"""
+        w, h = int(self.cfg.get("ekran_genislik", 2560)), int(self.cfg.get("ekran_yukseklik", 1600))
+        if w and h and not getattr(self, "_widened", False):
+            try:
+                self.page.set_viewport_size({"width": w, "height": h})
+                self._widened = True
+            except Exception:
+                pass
 
     def export_engine(self, app: dict, selections: dict, must_have: list[str], mode: str) -> pd.DataFrame:
         sel = {}

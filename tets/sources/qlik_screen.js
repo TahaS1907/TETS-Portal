@@ -1,60 +1,115 @@
-// Filtre uygulanmis Qlik tablosunu EKRANDAN okur (insanin gordugu satirlar).
-// Tablo kaydirilarak (sanal kaydirma) veya sayfa sayfa (sayfalama) tum satirlar toplanir.
-async ({ oid, tableSel, maxRows }) => {
+// Filtre uygulanmis Qlik tablosunu EKRANDAN okur (indirme yok).
+// Tablo hem asagi (satirlar) hem saga (ekrana sigmayan kolonlar) kaydirilir; her hucre kendi kolon
+// basligiyla eslestirilir. Sanal kaydirmali (sadece gorunen kismi ciziyor) tablolarda da calisir.
+async ({ oid, tableSel, maxRows, waitMs }) => {
   const root =
     (oid && document.querySelector(`[tid="${oid}"], [data-qid="${oid}"]`)) || document.querySelector(tableSel);
   if (!root) throw new Error("Tablo ekranda bulunamadi");
   const txt = (e) => (e.innerText || e.textContent || "").replace(/\s+/g, " ").trim();
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const scrollable = (axis) =>
+    [root, ...root.querySelectorAll("*")].find((e) => {
+      const s = getComputedStyle(e);
+      return axis === "y"
+        ? e.scrollHeight > e.clientHeight + 5 && /(auto|scroll)/.test(s.overflowY)
+        : e.scrollWidth > e.clientWidth + 5 && /(auto|scroll)/.test(s.overflowX);
+    });
+  const vS = scrollable("y");
+  const hS = scrollable("x");
 
-  const headers = [...root.querySelectorAll("thead th, [role=columnheader]")].map(txt).filter((h, i, a) => h || a.length);
-  if (!headers.length) throw new Error("Tablo basliklari ekrandan okunamadi");
-  const seen = new Set();
-  const rows = [];
-  const grab = () => {
+  let page = 0; // sayfalamali tablolarda sayfa numarasi (satir anahtarina girer)
+  const headerPos = new Map(); // baslik -> tablodaki yatay konum (siralama icin)
+  const rows = new Map(); // satir anahtari -> Map(baslik -> deger)
+  const isHeaderRow = (tr) => tr.querySelector("th, [role=columnheader]");
+
+  const snapshot = () => {
     let added = 0;
+    const hx = hS ? hS.scrollLeft : 0;
+    const vy = vS ? vS.scrollTop : 0;
+    const baseTop = (vS || root).getBoundingClientRect().top;
+    const heads = [...root.querySelectorAll("thead th, [role=columnheader]")]
+      .map((th) => {
+        const r = th.getBoundingClientRect();
+        return { text: txt(th), left: r.left, right: r.right, ci: th.getAttribute("aria-colindex") };
+      })
+      .filter((h) => h.text && h.right > h.left);
+    for (const h of heads) if (!headerPos.has(h.text)) headerPos.set(h.text, h.left + hx);
     root.querySelectorAll("tbody tr, [role=row]").forEach((tr) => {
-      if (tr.querySelector("th, [role=columnheader]")) return;
-      let cells = [...tr.querySelectorAll("td, [role=gridcell], [role=cell]")].map(txt);
+      if (isHeaderRow(tr)) return;
+      const cells = [...tr.querySelectorAll("td, [role=gridcell], [role=cell]")];
       if (!cells.length) return;
-      if (cells.length > headers.length) cells = cells.slice(cells.length - headers.length);
-      if (cells.length < headers.length * 0.5) return;
-      const k = cells.join("\u0001");
-      if (seen.has(k)) return;
-      seen.add(k);
-      rows.push(cells);
-      added++;
+      const ri = tr.getAttribute("aria-rowindex");
+      const key = page + ":" + (ri !== null ? "r" + ri : "y" + Math.round(tr.getBoundingClientRect().top - baseTop + vy));
+      let row = rows.get(key);
+      if (!row) {
+        if (rows.size >= maxRows) return;
+        row = new Map();
+        rows.set(key, row);
+        added++;
+      }
+      for (const td of cells) {
+        const ci = td.getAttribute("aria-colindex");
+        let h = ci !== null ? heads.find((x) => x.ci === ci) : null;
+        if (!h) {
+          const r = td.getBoundingClientRect();
+          const cx = (r.left + r.right) / 2;
+          h = heads.find((x) => cx >= x.left && cx <= x.right);
+        }
+        // hucre henuz yuklenmeden bos okunduysa sonraki gorunuste gercek degerle guncellenir
+        if (h && (!row.has(h.text) || row.get(h.text) === "")) row.set(h.text, txt(td));
+      }
     });
     return added;
   };
 
-  await sleep(300);
-  grab();
-  // sanal kaydirma
-  const scroller = [root, ...root.querySelectorAll("*")].find((e) => {
-    const s = getComputedStyle(e);
-    return e.scrollHeight > e.clientHeight + 5 && /(auto|scroll)/.test(s.overflowY);
-  });
-  if (scroller) {
-    let stable = 0;
-    while (stable < 3 && rows.length < maxRows) {
-      const before = scroller.scrollTop;
-      scroller.scrollTop = before + Math.max(50, scroller.clientHeight * 0.8);
-      await sleep(400);
-      const n = grab();
-      stable = n ? 0 : stable + 1;
-      if (scroller.scrollTop === before && !n) break; // en alta gelindi
+  // Bir dikey konumda: tablo saga dogru kaydirilarak tum kolonlar okunur
+  const sweepRight = async () => {
+    let n = snapshot();
+    if (!hS) return n;
+    let guard = 0;
+    while (hS.scrollLeft + hS.clientWidth < hS.scrollWidth - 2 && guard++ < 100) {
+      hS.scrollLeft = hS.scrollLeft + Math.max(50, hS.clientWidth * 0.6);
+      await sleep(waitMs);
+      n += snapshot();
     }
-    scroller.scrollTop = 0;
+    hS.scrollLeft = 0;
+    await sleep(waitMs);
+    return n;
+  };
+
+  await sleep(300);
+  await sweepRight();
+  if (vS) {
+    let stable = 0;
+    while (stable < 3 && rows.size < maxRows) {
+      const before = vS.scrollTop;
+      // kucuk adim: gorunen alanin yarisi, boylece hicbir satir atlanmaz
+      vS.scrollTop = before + Math.max(20, vS.clientHeight * 0.5);
+      await sleep(waitMs);
+      const n = await sweepRight();
+      stable = n ? 0 : stable + 1;
+      if (vS.scrollTop === before) break; // en alta gelindi
+    }
+    vS.scrollTop = 0;
   }
-  // sayfalama
-  const nextSel = "button[aria-label*='Next' i], button[title*='Next' i], button[aria-label*='Sonraki' i], button[title*='Sonraki' i]";
-  for (let i = 0; i < 500 && rows.length < maxRows; i++) {
+  // Sayfalama olan tablolarda sonraki sayfalar
+  const nextSel =
+    "button[aria-label*='Next' i], button[title*='Next' i], button[aria-label*='Sonraki' i], button[title*='Sonraki' i]";
+  for (let i = 0; i < 500 && rows.size < maxRows; i++) {
     const next = root.querySelector(nextSel);
     if (!next || next.disabled || next.getAttribute("aria-disabled") === "true") break;
     next.click();
-    await sleep(600);
-    if (!grab()) break;
+    page++;
+    await sleep(waitMs + 200);
+    if (!(await sweepRight())) break;
   }
-  return { headers, rows, truncated: rows.length >= maxRows };
+
+  const headers = [...headerPos.entries()].sort((a, b) => a[1] - b[1]).map((e) => e[0]);
+  if (!headers.length) throw new Error("Tablo basliklari ekrandan okunamadi");
+  const out = [];
+  for (const row of rows.values()) {
+    const vals = headers.map((h) => row.get(h) ?? "");
+    if (vals.some((v) => v !== "")) out.push(vals);
+  }
+  return { headers, rows: out, truncated: rows.size >= maxRows, hscroll: !!hS, vscroll: !!vS };
 }

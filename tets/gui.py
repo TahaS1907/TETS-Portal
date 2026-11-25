@@ -32,9 +32,9 @@ def open_path(p):
 
 
 METHOD_LABELS = {
-    "otomatik": "Otomatik - once ekrandan oku (indirmeden), olmazsa Download as ile indir",
-    "ekran": "Sadece ekrandan oku (Download as kullanma)",
-    "menu": "Sadece Download as ile indir",
+    "otomatik": "Otomatik - indirme yok, tabloyu ekrandan kaydirarak oku (onerilen)",
+    "ekran": "Sadece ekrandan oku",
+    "menu": "Eski yontem: Download as ile indir",
 }
 
 
